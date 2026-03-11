@@ -40,7 +40,7 @@ impl ImapExecutor {
     pub async fn list_all_mailboxes(&self) -> RustMailerResult<Vec<Name>> {
         let mut session = self.pool.get().await?;
         let list = session
-            .list(Some(""), Some("*"))
+            .list(Some("*"), Some("%"))
             .await
             .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
         let result = list
