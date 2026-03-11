@@ -144,7 +144,7 @@ impl BodyComposer {
                 </blockquote>
             </body>
             </html>"#,
-            html_escape::encode_text(&reply_content),
+            reply_content,
             message_type,
             headers.join("<br>"),
             original_body
