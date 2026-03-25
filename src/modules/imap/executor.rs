@@ -11,7 +11,7 @@ use bb8::Pool;
 use futures::{StreamExt, TryStreamExt};
 use mail_parser::MessageParser;
 use std::collections::HashSet;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// The IMAP query to fetch email metadata including headers and body structure.
 const RICH_METADATA_QUERY: &str = "(UID BODYSTRUCTURE RFC822.SIZE INTERNALDATE FLAGS BODY.PEEK[HEADER.FIELDS (BCC CC Date From In-Reply-To Sender Return-Path Message-ID Subject MIME-Version References Reply-To To Received)])";
@@ -39,93 +39,138 @@ impl ImapExecutor {
 
     pub async fn list_all_mailboxes(&self) -> RustMailerResult<Vec<Name>> {
         let mut session = self.pool.get().await?;
-        let list = session
-            .list(Some("*"), Some("%"))
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let result = list
-            .try_collect::<Vec<Name>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
+
+        let result = async {
+            let list = session.list(Some(""), Some("*")).await?;
+            list.try_collect::<Vec<Name>>().await
+        }
+        .await
+        .map_err(|e| {
+            if is_connection_error(&e) {
+                session.is_bad = true;
+            }
+            raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed)
+        })?;
+
+        if result.is_empty() {
+            session.is_bad = true;
+            warn!("IMAP list returned empty, marking connection as bad.");
+        }
+
         Ok(result)
     }
 
     pub async fn list_all_subscribed_mailboxes(&self) -> RustMailerResult<Vec<Name>> {
         let mut session = self.pool.get().await?;
-        let list = session
-            .lsub(Some(""), Some("*"))
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let result = list
-            .try_collect::<Vec<Name>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
+
+        let result = async {
+            let list_stream = session.lsub(Some(""), Some("*")).await?;
+            list_stream.try_collect::<Vec<Name>>().await
+        }
+        .await
+        .map_err(|e| {
+            if is_connection_error(&e) {
+                session.is_bad = true;
+            }
+            raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed)
+        })?;
+
+        if result.is_empty() {
+            if let Err(_) = session.noop().await {
+                session.is_bad = true;
+                warn!("LSUB returned empty and NOOP failed, marking connection as bad.");
+            }
+        }
+
         Ok(result)
     }
 
     pub async fn create_mailbox(&self, mailbox_name: &str) -> RustMailerResult<()> {
         let mut session = self.pool.get().await?;
-        session
-            .create(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
+        session.create(mailbox_name).await.map_err(|e| {
+            if is_connection_error(&e) {
+                session.is_bad = true;
+            }
+            raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed)
+        })?;
         Ok(())
     }
 
     pub async fn examine_mailbox(&self, mailbox_name: &str) -> RustMailerResult<Mailbox> {
         let mut session = self.pool.get().await?;
-        session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))
+        session.examine(mailbox_name).await.map_err(|e| {
+            if is_connection_error(&e) {
+                session.is_bad = true;
+            }
+            raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed)
+        })
+    }
+
+    async fn do_expunge(
+        session: &mut bb8::PooledConnection<'_, ImapConnectionManager>,
+        mailbox_name: &str,
+    ) -> Result<(), async_imap::error::Error> {
+        session.select(mailbox_name).await?;
+        let _ = session.expunge().await?;
+        Ok(())
     }
 
     pub async fn expunge_mailbox(&self, mailbox_name: &str) -> RustMailerResult<()> {
-        let mut session = self.pool.get().await?;
-        session
-            .select(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let _ = session
-            .expunge()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
+        let mut session: bb8::PooledConnection<'_, ImapConnectionManager> = self.pool.get().await?;
+        let result = Self::do_expunge(&mut session, mailbox_name).await;
+        if let Err(e) = result {
+            if is_connection_error(&e) {
+                session.is_bad = true;
+            }
+            return Err(raise_error!(
+                format!("{:#?}", e),
+                ErrorCode::ImapCommandFailed
+            ));
+        }
         Ok(())
     }
 
     pub async fn delete_mailbox(&self, mailbox_name: &str) -> RustMailerResult<()> {
         let mut session = self.pool.get().await?;
-        session
-            .delete(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
+        session.delete(mailbox_name).await.map_err(|e| {
+            if is_connection_error(&e) {
+                session.is_bad = true;
+            }
+            raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed)
+        })?;
         Ok(())
     }
 
     pub async fn rename_mailbox(&self, from: &str, to: &str) -> RustMailerResult<()> {
         let mut session = self.pool.get().await?;
-        session
-            .rename(from, to)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
+        session.rename(from, to).await.map_err(|e| {
+            if is_connection_error(&e) {
+                session.is_bad = true;
+            }
+            raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed)
+        })?;
         Ok(())
     }
 
     pub async fn subscribe_mailbox(&self, mailbox_name: &str) -> RustMailerResult<()> {
         let mut session = self.pool.get().await?;
-        session
-            .subscribe(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
+        session.subscribe(mailbox_name).await.map_err(|e| {
+            if is_connection_error(&e) {
+                session.is_bad = true;
+            }
+            raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed)
+        })?;
         Ok(())
     }
 
     pub async fn unsubscribe_mailbox(&self, mailbox_name: &str) -> RustMailerResult<()> {
         let mut session = self.pool.get().await?;
-        session
-            .unsubscribe(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
+        session.unsubscribe(mailbox_name).await.map_err(|e| {
+            if is_connection_error(&e) {
+                session.is_bad = true;
+            }
+            raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed)
+        })?;
         Ok(())
     }
 
@@ -136,30 +181,41 @@ impl ImapExecutor {
         minimal: bool,
     ) -> RustMailerResult<Vec<Fetch>> {
         assert!(start_uid > 0, "start_uid must be greater than 0");
+
         let uid_set = format!("{}:*", start_uid);
-
         let mut session = self.pool.get().await?;
-        session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
 
-        let list = session
-            .uid_fetch(
-                uid_set.as_str(),
-                if minimal {
-                    MINIMAL_METADATA_QUERY
-                } else {
-                    "(UID)"
-                },
-            )
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let result = list
-            .try_collect::<Vec<Fetch>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(result)
+        let result: Result<Vec<Fetch>, _> = async {
+            session.examine(mailbox_name).await?;
+
+            let list = session
+                .uid_fetch(
+                    uid_set.as_str(),
+                    if minimal {
+                        MINIMAL_METADATA_QUERY
+                    } else {
+                        "(UID)"
+                    },
+                )
+                .await?;
+
+            let result = list.try_collect::<Vec<Fetch>>().await?;
+            Ok(result)
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
     /// Get the UID of a message by its Message-ID in the specified mailbox.
@@ -174,72 +230,51 @@ impl ImapExecutor {
         mailbox_name: &str,
     ) -> RustMailerResult<u32> {
         let mut session = self.pool.get().await?;
-        session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
 
-        let mut stream = session
-            .fetch("1:*", HEADER_MESSAGE_ID_QUERY)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
+        let result: Result<u32, async_imap::error::Error> = async {
+            session.examine(mailbox_name).await?;
 
-        while let Some(fetch_res) = stream.next().await {
-            match fetch_res {
-                Ok(fetch) => {
-                    let uid = fetch.uid.ok_or_else(|| {
-                        raise_error!(
-                            format!("Missing UID in a fetch from mailbox '{}'", mailbox_name),
-                            ErrorCode::InternalError
-                        )
-                    })?;
-                    let header = fetch.header().ok_or_else(|| {
-                        raise_error!(
-                            format!(
-                                "Missing header in UID {} from mailbox '{}'",
-                                uid, mailbox_name
-                            ),
-                            ErrorCode::InternalError
-                        )
-                    })?;
-                    let headers =
-                        MessageParser::default()
-                            .parse_headers(&header)
-                            .ok_or_else(|| {
-                                raise_error!(
-                                    format!(
-                                        "Failed to parse headers for UID {} in mailbox '{}'",
-                                        uid, mailbox_name
-                                    ),
-                                    ErrorCode::InternalError
-                                )
-                            })?;
-                    let message_id = headers.message_id().ok_or_else(|| {
-                        raise_error!(
-                            format!(
-                                "No Message-ID found for UID {} in mailbox '{}'",
-                                uid, mailbox_name
-                            ),
-                            ErrorCode::InternalError
-                        )
-                    })?;
+            let mut stream = session.fetch("1:*", HEADER_MESSAGE_ID_QUERY).await?;
+
+            while let Some(fetch_res) = stream.next().await {
+                let fetch = fetch_res?;
+
+                let uid = fetch
+                    .uid
+                    .ok_or_else(|| async_imap::error::Error::Bad("Missing UID".into()))?;
+
+                let header = fetch
+                    .header()
+                    .ok_or_else(|| async_imap::error::Error::Bad("Missing header".into()))?;
+
+                let headers = MessageParser::default()
+                    .parse_headers(&header)
+                    .ok_or_else(|| async_imap::error::Error::Bad("Header parse failed".into()))?;
+
+                if let Some(message_id) = headers.message_id() {
                     if message_id == target_message_id {
                         return Ok(uid);
                     }
                 }
-                Err(e) => {
-                    eprintln!("fetch error: {:?}", e);
-                    return Err(raise_error!(format!("{:#?}", e), ErrorCode::InternalError));
+            }
+
+            Err(async_imap::error::Error::Bad("Message not found".into()))
+        }
+        .await;
+
+        match result {
+            Ok(uid) => Ok(uid),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
                 }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
             }
         }
-        Err(raise_error!(
-            format!(
-                "Message-ID '{}' not found in mailbox '{}'",
-                target_message_id, mailbox_name
-            ),
-            ErrorCode::ResourceNotFound
-        ))
     }
 
     pub async fn retrieve_metadata_paginated(
@@ -254,58 +289,63 @@ impl ImapExecutor {
         assert!(page_size > 0, "Page size must be greater than 0");
 
         let mut session = self.pool.get().await?;
-        let total = session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?
-            .exists as u64;
 
-        if total == 0 {
-            return Ok((Vec::new(), 0));
+        let result: Result<(Vec<Fetch>, u64), async_imap::error::Error> = async {
+            let total = session.examine(mailbox_name).await?.exists as u64;
+
+            if total == 0 {
+                return Ok((Vec::new(), 0));
+            }
+
+            let (start, end) = if desc {
+                let end = total.saturating_sub((page - 1) * page_size);
+                if end == 0 {
+                    return Ok((Vec::new(), total));
+                }
+                let start = end.saturating_sub(page_size - 1).max(1);
+                (start, end)
+            } else {
+                let start = (page - 1) * page_size + 1;
+                if start > total {
+                    return Ok((Vec::new(), total));
+                }
+                let end = (start + page_size - 1).min(total);
+                (start, end)
+            };
+
+            let sequence_set = format!("{}:{}", start, end);
+
+            info!(
+                "Fetching mailbox '{}' messages: sequence {} (page {}, page_size {}, desc={})",
+                mailbox_name, sequence_set, page, page_size, desc
+            );
+
+            let query = if minimal {
+                MINIMAL_METADATA_QUERY
+            } else {
+                RICH_METADATA_QUERY
+            };
+
+            let list = session.fetch(sequence_set.as_str(), query).await?;
+            let result = list.try_collect::<Vec<Fetch>>().await?;
+
+            Ok((result, total))
         }
+        .await;
 
-        let (start, end) = if desc {
-            // Fetch messages starting from the newest (descending order)
-            let end = total.saturating_sub((page - 1) * page_size);
-            if end == 0 {
-                return Ok((Vec::new(), total));
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
             }
-            // Calculate start as end - page_size + 1 to avoid off-by-one errors
-            let start = end.saturating_sub(page_size - 1).max(1);
-            (start, end)
-        } else {
-            // Fetch messages starting from the oldest (ascending order)
-            let start = (page - 1) * page_size + 1;
-            if start > total {
-                return Ok((Vec::new(), total));
-            }
-            // Calculate end, capped by the total number of messages
-            let end = (start + page_size - 1).min(total);
-            (start, end)
-        };
-
-        let sequence_set = format!("{}:{}", start, end);
-        info!(
-            "Fetching mailbox '{}' messages: sequence {} (page {}, page_size {}, desc={})",
-            mailbox_name, sequence_set, page, page_size, desc
-        );
-
-        let query = if minimal {
-            MINIMAL_METADATA_QUERY
-        } else {
-            RICH_METADATA_QUERY
-        };
-
-        let list = session
-            .fetch(sequence_set.as_str(), query)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-
-        let result = list
-            .try_collect::<Vec<Fetch>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok((result, total))
+        }
     }
 
     pub async fn retrieve_paginated_uid_and_flags(
@@ -317,58 +357,63 @@ impl ImapExecutor {
     ) -> RustMailerResult<Vec<Fetch>> {
         assert!(page > 0, "Page number must be greater than 0");
         assert!(page_size > 0, "Page size must be greater than 0");
+
         let mut session = self.pool.get().await?;
-        let total = session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?
-            .exists;
 
-        if total == 0 {
-            return Ok(Vec::new());
-        }
+        let result: Result<Vec<Fetch>, async_imap::error::Error> = async {
+            let total = session.examine(mailbox_name).await?.exists;
 
-        let (start, end) = if desc {
-            // Fetch messages starting from the newest (descending order)
-            let end = total.saturating_sub((page - 1) * page_size);
-            if end == 0 {
+            if total == 0 {
                 return Ok(Vec::new());
             }
-            // Calculate start as end - page_size + 1 to avoid off-by-one errors
-            let start = end.saturating_sub(page_size - 1).max(1);
-            (start, end)
-        } else {
-            // Fetch messages starting from the oldest (ascending order)
-            let start = (page - 1) * page_size + 1;
-            if start > total {
+
+            let (start, end) = if desc {
+                let end = total.saturating_sub((page - 1) * page_size);
+                if end == 0 {
+                    return Ok(Vec::new());
+                }
+                let start = end.saturating_sub(page_size - 1).max(1);
+                (start, end)
+            } else {
+                let start = (page - 1) * page_size + 1;
+                if start > total {
+                    return Ok(Vec::new());
+                }
+                let end = (start + page_size - 1).min(total);
+                (start, end)
+            };
+
+            if start > end {
                 return Ok(Vec::new());
             }
-            // Calculate end, capped by the total number of messages
-            let end = (start + page_size - 1).min(total);
-            (start, end)
-        };
 
-        if start > end {
-            return Ok(Vec::new());
+            let sequence_set = format!("{}:{}", start, end);
+
+            info!(
+                "Fetching mailbox '{}' messages: sequence {} (page {}, page_size {}, desc={})",
+                mailbox_name, sequence_set, page, page_size, desc
+            );
+
+            let list = session.fetch(sequence_set.as_str(), UID_FLAGS).await?;
+            let result = list.try_collect::<Vec<Fetch>>().await?;
+
+            Ok(result)
         }
+        .await;
 
-        // Format and print the sequence set
-        let sequence_set = format!("{}:{}", start, end);
-        info!(
-            "Fetching mailbox '{}' messages: sequence {} (page {}, page_size {}, desc={})",
-            mailbox_name, sequence_set, page, page_size, desc
-        );
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
 
-        let list = session
-            .fetch(sequence_set.as_str(), UID_FLAGS)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-
-        let result = list
-            .try_collect::<Vec<Fetch>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(result)
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
     pub async fn uid_fetch_uid_and_flags(
@@ -377,20 +422,32 @@ impl ImapExecutor {
         mailbox_name: &str,
     ) -> RustMailerResult<Vec<Fetch>> {
         debug!("Fetching UID batch: '{}'", uid_set);
+
         let mut session = self.pool.get().await?;
-        session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let list = session
-            .uid_fetch(uid_set, UID_FLAGS)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let result = list
-            .try_collect::<Vec<Fetch>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(result)
+
+        let result: Result<Vec<Fetch>, async_imap::error::Error> = async {
+            session.examine(mailbox_name).await?;
+
+            let list = session.uid_fetch(uid_set, UID_FLAGS).await?;
+            let result = list.try_collect::<Vec<Fetch>>().await?;
+
+            Ok(result)
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
     pub async fn uid_fetch_body_structure(
@@ -399,19 +456,30 @@ impl ImapExecutor {
         mailbox_name: &str,
     ) -> RustMailerResult<Vec<Fetch>> {
         let mut session = self.pool.get().await?;
-        session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
 
-        let result = session
-            .uid_fetch(uid_set, BODYSTRUCTURE)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?
-            .try_collect::<Vec<Fetch>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(result)
+        let result: Result<Vec<Fetch>, async_imap::error::Error> = async {
+            session.examine(mailbox_name).await?;
+
+            let list = session.uid_fetch(uid_set, BODYSTRUCTURE).await?;
+            let result = list.try_collect::<Vec<Fetch>>().await?;
+
+            Ok(result)
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
     pub async fn uid_fetch_meta(
@@ -421,23 +489,36 @@ impl ImapExecutor {
         minimal: bool,
     ) -> RustMailerResult<Vec<Fetch>> {
         let mut session = self.pool.get().await?;
-        session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let query = if minimal {
-            MINIMAL_METADATA_QUERY
-        } else {
-            RICH_METADATA_QUERY
-        };
-        let result = session
-            .uid_fetch(uid_set, query)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?
-            .try_collect::<Vec<Fetch>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(result)
+
+        let result: Result<Vec<Fetch>, async_imap::error::Error> = async {
+            session.examine(mailbox_name).await?;
+
+            let query = if minimal {
+                MINIMAL_METADATA_QUERY
+            } else {
+                RICH_METADATA_QUERY
+            };
+
+            let list = session.uid_fetch(uid_set, query).await?;
+            let result = list.try_collect::<Vec<Fetch>>().await?;
+
+            Ok(result)
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
     pub async fn append(
@@ -451,7 +532,12 @@ impl ImapExecutor {
         session
             .append(mailbox_name, flags, internaldate, content)
             .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))
+            .map_err(|e| {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+                raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed)
+            })
     }
 
     pub async fn uid_fetch_full_message(
@@ -460,19 +546,30 @@ impl ImapExecutor {
         mailbox_name: &str,
     ) -> RustMailerResult<Option<Fetch>> {
         let mut session = self.pool.get().await?;
-        session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let mut stream = session
-            .uid_fetch(uid, BODY_FETCH_COMMAND)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let fetch = stream
-            .try_next()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(fetch)
+
+        let result: Result<Option<Fetch>, async_imap::error::Error> = async {
+            session.examine(mailbox_name).await?;
+
+            let mut stream = session.uid_fetch(uid, BODY_FETCH_COMMAND).await?;
+            let fetch = stream.try_next().await?;
+
+            Ok(fetch)
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
     pub async fn uid_fetch_single_part(
@@ -482,31 +579,32 @@ impl ImapExecutor {
         path: &str,
     ) -> RustMailerResult<Vec<Fetch>> {
         let mut session = self.pool.get().await?;
-        session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let list = session
-            .uid_fetch(uid, &format!("(UID BODY.PEEK[{}])", path))
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let result = list
-            .try_collect::<Vec<Fetch>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(result)
-    }
 
-    // pub async fn uid_expunge_envelopes(
-    //     &self,
-    //     uid_set: &str,
-    //     mailbox_name: &str,
-    // ) -> RustMailerResult<()> {
-    //     let mut session = self.pool.get().await?;
-    //     session.examine(mailbox_name).await.map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapOperationFailed))?;
-    //     let _ = session.uid_expunge(uid_set).await.map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapOperationFailed))?;
-    //     Ok(())
-    // }
+        let result: Result<Vec<Fetch>, async_imap::error::Error> = async {
+            session.examine(mailbox_name).await?;
+
+            let query = format!("(UID BODY.PEEK[{}])", path);
+            let list = session.uid_fetch(uid, &query).await?;
+            let result = list.try_collect::<Vec<Fetch>>().await?;
+
+            Ok(result)
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
+    }
 
     pub async fn uid_move_envelopes(
         &self,
@@ -515,15 +613,27 @@ impl ImapExecutor {
         to: &str,
     ) -> RustMailerResult<()> {
         let mut session = self.pool.get().await?;
-        session
-            .select(from)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        session
-            .uid_mv(uid_set, to)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(())
+
+        let result: Result<(), async_imap::error::Error> = async {
+            session.select(from).await?;
+            session.uid_mv(uid_set, to).await?;
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
     pub async fn uid_copy_envelopes(
@@ -533,15 +643,27 @@ impl ImapExecutor {
         to: &str,
     ) -> RustMailerResult<()> {
         let mut session = self.pool.get().await?;
-        session
-            .select(from)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        session
-            .uid_copy(uid_set, to)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(())
+
+        let result: Result<(), async_imap::error::Error> = async {
+            session.select(from).await?;
+            session.uid_copy(uid_set, to).await?;
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
     async fn uid_flag_store(
@@ -551,19 +673,28 @@ impl ImapExecutor {
         query: &str,
     ) -> RustMailerResult<Vec<Fetch>> {
         let mut session = self.pool.get().await?;
-        session
-            .select(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let list = session
-            .uid_store(uid_set, query)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let result = list
-            .try_collect::<Vec<Fetch>>()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(result)
+
+        let result: Result<Vec<Fetch>, async_imap::error::Error> = async {
+            session.select(mailbox_name).await?;
+            let list = session.uid_store(uid_set, query).await?;
+            let result = list.try_collect::<Vec<Fetch>>().await?;
+            Ok(result)
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
     pub async fn uid_set_flags(
@@ -650,14 +781,39 @@ impl ImapExecutor {
         query: &str,
     ) -> RustMailerResult<HashSet<u32>> {
         let mut session = self.pool.get().await?;
-        session
-            .examine(mailbox_name)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        let result = session
-            .uid_search(query)
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))?;
-        Ok(result)
+
+        let result: Result<HashSet<u32>, async_imap::error::Error> = async {
+            session.examine(mailbox_name).await?;
+            let result = session.uid_search(query).await?;
+            Ok(result)
+        }
+        .await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if is_connection_error(&e) {
+                    session.is_bad = true;
+                }
+
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
+    }
+}
+
+fn is_connection_error(e: &async_imap::error::Error) -> bool {
+    match e {
+        async_imap::error::Error::Io(_) => true,
+        async_imap::error::Error::Bad(_) => false,
+        async_imap::error::Error::No(_) => false,
+        async_imap::error::Error::ConnectionLost => true,
+        async_imap::error::Error::Parse(_) => true,
+        async_imap::error::Error::Validate(_) => true,
+        async_imap::error::Error::Append => false,
+        _ => true,
     }
 }

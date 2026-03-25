@@ -9,24 +9,45 @@ use crate::raise_error;
 use async_imap::Session;
 use bb8::Pool;
 use std::time::Duration;
+use tracing::{error, warn};
 
 impl bb8::ManageConnection for ImapConnectionManager {
-    type Connection = Session<Box<dyn SessionStream>>;
+    type Connection = MyImapConnection;
 
     type Error = RustMailerError;
 
     async fn connect(&self) -> RustMailerResult<Self::Connection> {
-        self.build().await
+        let session = self.build().await?;
+        Ok(MyImapConnection {
+            session,
+            is_bad: false,
+        })
     }
     // call this function before using the connection
     async fn is_valid(&self, conn: &mut Self::Connection) -> RustMailerResult<()> {
-        conn.noop()
-            .await
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::ImapCommandFailed))
+        match tokio::time::timeout(Duration::from_secs(5), conn.noop()).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => {
+                error!("IMAP connection validation failed: {:?}", e);
+                conn.is_bad = true;
+                Err(raise_error!(
+                    format!("{:#?}", e),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+            Err(_) => {
+                warn!("IMAP NOOP timeout");
+                conn.is_bad = true;
+                Err(raise_error!(
+                    "NOOP timeout".into(),
+                    ErrorCode::ImapCommandFailed
+                ))
+            }
+        }
     }
 
-    fn has_broken(&self, _: &mut Self::Connection) -> bool {
-        false
+    fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+        conn.is_bad
     }
 }
 
@@ -34,12 +55,31 @@ pub async fn build_imap_pool(account_id: u64) -> RustMailerResult<Pool<ImapConne
     let manager = ImapConnectionManager::new(account_id);
     let pool = Pool::builder()
         .connection_timeout(Duration::from_secs(30))
-        .idle_timeout(Duration::from_secs(120))
+        .idle_timeout(Duration::from_secs(600))
+        .max_lifetime(Duration::from_secs(1800))
         .retry_connection(true)
-        .max_size(10)
+        .max_size(8)
         .test_on_check_out(true)
         .build(manager)
         .await?;
 
     Ok(pool)
+}
+
+pub struct MyImapConnection {
+    pub session: Session<Box<dyn SessionStream>>,
+    pub is_bad: bool,
+}
+
+impl std::ops::Deref for MyImapConnection {
+    type Target = Session<Box<dyn SessionStream>>;
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
+impl std::ops::DerefMut for MyImapConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.session
+    }
 }
