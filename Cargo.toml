@@ -1,6 +1,6 @@
 [package]
 name = "rustmailer"
-version = "1.6.0"
+version = "1.6.1"
 edition = "2021"
 
 [[bin]]
@@ -36,7 +36,7 @@ poem-openapi = { version = "5.1.16", features = [
     "swagger-ui",
     "email",
 ] }
-poem-grpc = { version = "0.5.7", features = [
+poem-grpc = { version = "0.5.9", features = [
     "gzip",
     "deflate",
     "brotli",
@@ -45,8 +45,8 @@ poem-grpc = { version = "0.5.7", features = [
 min_jwt = { version = "0.10.0", features = ["ring", "serde", "serde_json"] }
 ring = { version = "0.17.14", features = ["std"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-tokio = { version = "1.48.0", features = ["full"] }
+serde_json = "1.0.149"
+tokio = { version = "1.50.0", features = ["full"] }
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
@@ -101,8 +101,8 @@ tokio-io-timeout = "1.2.1"
 bb8 = "0.9.0"
 # Note: Keep prost and prost-types at the same version to avoid potential conflicts.
 # Make sure to test thoroughly before upgrading or changing versions.
-prost = "0.13.5"
-prost-types = "0.13.5"
+prost = "0.14"
+prost-types = "0.14"
 semver = "1.0.27"
 governor = "0.10.1"
 async-nats = { version = "0.45.0" }
