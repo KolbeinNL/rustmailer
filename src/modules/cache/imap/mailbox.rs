@@ -2,6 +2,8 @@
 // Licensed under RustMailer License Agreement v1.0
 // Unauthorized copying, modification, or distribution is prohibited.
 
+use std::hash::Hash;
+
 use crate::{
     decode_mailbox_name, encode_mailbox_name,
     modules::{
@@ -213,6 +215,28 @@ pub struct EnvelopeFlag {
     /// An optional string specifying the name of a custom flag when `flag` is `EmailFlag::Custom`.
     /// For standard flags, this is `None`.
     pub custom: Option<String>,
+}
+
+impl Hash for EnvelopeFlag {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.flag.hash(state);
+        self.custom.hash(state);
+    }
+}
+
+impl Hash for EmailFlag {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            EmailFlag::Seen => "\\Seen".hash(state),
+            EmailFlag::Answered => "\\Answered".hash(state),
+            EmailFlag::Flagged => "\\Flagged".hash(state),
+            EmailFlag::Deleted => "\\Deleted".hash(state),
+            EmailFlag::Draft => "\\Draft".hash(state),
+            EmailFlag::Recent => "\\Recent".hash(state),
+            EmailFlag::MayCreate => "\\MayCreate".hash(state),
+            EmailFlag::Custom => "Custom".hash(state),
+        }
+    }
 }
 
 impl EnvelopeFlag {

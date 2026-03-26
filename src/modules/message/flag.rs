@@ -6,9 +6,11 @@ use crate::{
     modules::{
         account::migration::AccountModel,
         cache::imap::mailbox::EnvelopeFlag,
+        cache::imap::manager::EnvelopeFlagsManager,
         context::executors::RUST_MAIL_CONTEXT,
         envelope::generate_uid_set,
         error::{code::ErrorCode, RustMailerResult},
+        utils::mailbox_id,
     },
     raise_error,
 };
@@ -91,10 +93,22 @@ pub async fn modify_flags(account_id: u64, request: FlagMessageRequest) -> RustM
         .uid_set_flags(
             &uid_set,
             &request.mailbox,
-            request.action.add,
-            request.action.remove,
-            request.action.overwrite,
+            request.action.add.clone(),
+            request.action.remove.clone(),
+            request.action.overwrite.clone(),
         )
         .await?;
+    
+    let mailbox_id = mailbox_id(account_id, &request.mailbox);
+    let _ = EnvelopeFlagsManager::
+        modify_flags(
+            request.uids.clone(), 
+            account_id, 
+            mailbox_id, 
+            request.action.overwrite.clone(), 
+            request.action.add.clone(), 
+            request.action.remove.clone()
+        )
+        .await;
     Ok(())
 }

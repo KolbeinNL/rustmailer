@@ -131,6 +131,37 @@ impl EnvelopeFlagsManager {
         result
     }
 
+    pub async fn modify_flags(uids: Vec<u32>, account_id: u64, mailbox_id: u64, overwrite_flags: Option<Vec<EnvelopeFlag>>, added_flags: Option<Vec<EnvelopeFlag>>, removed_flags: Option<Vec<EnvelopeFlag>>) -> RustMailerResult<()> {
+        for uid in uids {
+            let mail = EmailEnvelopeV3::find(account_id, mailbox_id, uid).await?;
+            if let Some(mail) = mail {
+                let current_flags = mail.flags;
+                let new_flags = if let Some(overwrite) = &overwrite_flags {
+                    overwrite.clone()
+                } else {
+                    let mut flags_set: std::collections::HashSet<EnvelopeFlag> =
+                        current_flags.into_iter().collect();
+                    if let Some(add) = &added_flags {
+                        for flag in add {
+                            flags_set.insert(flag.clone());
+                        }
+                    }
+                    if let Some(remove) = &removed_flags {
+                        for flag in remove {
+                            flags_set.remove(&flag);
+                        }
+                    }
+                    flags_set.into_iter().collect()
+                };
+                let flags_hash = flags_to_hash(&new_flags);
+                EmailEnvelopeV3::update_flags(account_id, mailbox_id, uid, &new_flags, flags_hash).await?;
+                MinimalEnvelope::update_flags(account_id, mailbox_id, uid, flags_hash).await?;
+                Self::update_flag_change(account_id, mailbox_id, uid, flags_hash);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn update_envelope_flags(
         account: &AccountModel,
         mailbox_id: u64,
