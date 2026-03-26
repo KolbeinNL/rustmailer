@@ -61,6 +61,10 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for StatsWrapper<T> {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
+
+    fn is_write_vectored(&self) -> bool {
+        false
+    }
 }
 
 impl<T: SessionStream> SessionStream for StatsWrapper<T> {
