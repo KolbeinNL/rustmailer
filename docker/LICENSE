@@ -1,0 +1,112 @@
+
+# RustMailer License Agreement (v1.0)
+**Effective date: July 16, 2025**  
+**Copyright © 2025-2026 rustmailer.com. All rights reserved.**  
+
+## 1. Definitions
+
+- **“Software”** refers to RustMailer, including all versions, components, source code, binaries, updates, patches, documentation, and related materials.
+- **“You”** or **“User”** refers to any person or legal entity installing, accessing, or using the Software.
+- **“Instance”** means a single deployment of RustMailer on a server, container, or VM, regardless of the number of email accounts it serves.
+- **“License Key”** refers to a unique code issued by the Author that enables full usage of the Software beyond the trial period.
+- **“Author”** refers to the creator of RustMailer. At present, the project is maintained by an individual. The ownership may be transferred to a legal entity (e.g., a UK-based company) in the future without affecting existing license holders.
+
+## 2. License Grant
+
+Subject to the terms of this agreement, the Author grants you a non-exclusive, non-transferable, non-sublicensable, revocable license to use the Software for your own business or personal needs.
+
+You may:
+
+- Use the Software on any number of production instances within your personal or organizational infrastructure under a valid License Key.
+- Use the Software without a License Key during a 14-day free trial period, for evaluation purposes.
+- Use the Software for internal development, testing, or non-commercial research activities.
+- Embed the Software as a component within your own applications or services for internal business purposes, including use by your customers or end users.
+
+## 3. Restrictions
+
+You may **not**, without prior written consent:
+
+- Share, lease, sublicense, resell, or redistribute the Software or any part thereof.
+- Modify or circumvent the license verification mechanism.
+- Host RustMailer as a public or commercial service for third parties (e.g., SaaS or white-label) without a commercial license agreement.
+- Remove or obscure copyright, attribution, or license notices.
+- Share a License Key with third parties outside your organization.
+
+## 4. Source Code Access
+
+RustMailer’s complete source code, including frontend and backend, is publicly accessible at [https://github.com/rustmailer/rustmailer](https://github.com/rustmailer/rustmailer).
+
+You are granted the rights to:
+
+- Inspect, download, compile, and run the software for your own personal or organizational use, subject to license validation and compliance with this License Agreement.
+- Audit the code for security and compliance purposes.
+
+However, you may not:
+
+- Fork, clone, or otherwise create derivative works for the purpose of developing a competing product or providing a commercial hosted service based on RustMailer.
+- Rebrand, redistribute, or publicly release modified or unmodified versions of the source code.
+- Use the source code to offer software-as-a-service (SaaS) or any commercial services to third parties without explicit written permission.
+- Remove or alter copyright, licensing, or attribution information in the source code or binaries.
+- Bypass, disable, or circumvent any license validation or usage restrictions enforced by the software.
+
+All usage of the source code is subject to the terms of this License Agreement.
+
+
+## 5. License Key Terms
+
+- License Keys are issued upon purchase and are tied to your subscription.
+- Each License Key is valid for use on any number of production instances within your personal or organizational infrastructure.
+- You must not share License Keys outside your organization.
+- Expired or revoked License Keys will disable access to the Software after a grace period of 30 days.
+
+## 6. Termination
+
+This License will terminate automatically if:
+
+- You fail to comply with any part of this Agreement.
+- You use an invalid or revoked License Key.
+- You attempt to reverse-engineer, bypass, or disable any licensing-related code.
+
+Upon termination, you must stop using the Software and delete all related files from your systems.
+
+## 7. Ownership and Intellectual Property
+
+The Software is licensed, not sold. The Author retains all rights, title, and interest in and to the Software, including all intellectual property rights.
+
+## 8. No Warranty
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED.  
+THE AUTHOR DISCLAIMS ALL WARRANTIES, INCLUDING BUT NOT LIMITED TO MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, OR THAT THE SOFTWARE WILL BE ERROR-FREE OR UNINTERRUPTED.
+
+## 9. Limitation of Liability
+
+To the fullest extent permitted by law, the Author shall not be liable for:
+
+- Any indirect, incidental, special, consequential, or punitive damages.
+- Any loss of revenue, profits, or data arising from the use or inability to use the Software.
+- Any claims exceeding the amount paid by the user for the license during the 12 months prior to the claim.
+
+Note: The Author offers a satisfaction guarantee through the official website, allowing unconditional refunds within the subscription period.  
+This License’s limitation of liability clause does not affect such refund policies.
+
+
+## 10. Governing Law and Jurisdiction
+
+This Agreement shall be governed by the laws of the United Kingdom (or the Author’s country of residence if no company is formed).  
+Any disputes shall be resolved by the competent courts in London, UK, unless otherwise agreed.
+
+## 11. Privacy and Data
+
+RustMailer does **not** collect, transmit, or store any user data or email content.
+Once installed, RustMailer runs entirely within your own environment and is fully isolated from the Author’s servers or website.
+No telemetry, usage data, or personal information is sent to or collected by the Author or any third parties.
+
+## 12. Updates and Changes
+
+- The Author reserves the right to change or update this License Agreement at any time.
+- Continued use of the Software after such changes constitutes your acceptance.
+
+## 13. Acceptance
+
+By installing or using RustMailer, you acknowledge that you have read, understood, and agreed to be bound by this License Agreement.
+
