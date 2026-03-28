@@ -9,7 +9,7 @@ use async_imap::{
     },
     types::Fetch,
 };
-use imap_proto::ContentType;
+use imap_proto::{ContentDisposition, ContentType};
 use mail_parser::decoders::{
     base64::base64_decode_stream, quoted_printable::quoted_printable_decode,
 };
@@ -337,9 +337,9 @@ impl<'a> SectionExtractor<'a> {
         Self::recursive_parse_body(self.structure, SegmentPath::new(Vec::new()))
     }
 
-    /// Retrieves the file name from the content disposition if it exists.
-    fn get_file_name(disposition: &ContentType<'a>) -> Option<String> {
-        disposition
+    /// Retrieves the file name from the content type if it exists.
+    fn get_file_name(ty: &ContentType<'a>) -> Option<String> {
+        ty
             .params
             .as_ref()?
             .iter()
@@ -350,6 +350,25 @@ impl<'a> SectionExtractor<'a> {
                     None
                 }
             })
+    }
+
+    /// Retrieves the file name from the content disposition if it exists.
+    fn get_file_name_disposition(disposition_option: &Option<ContentDisposition<'a>>) -> Option<String> {
+        if let Some(disposition) = &disposition_option {
+            disposition
+                .params
+                .as_ref()?
+                .iter()
+                .find_map(|(key, value)| {
+                    if key.eq_ignore_ascii_case("filename") {
+                        Some(try_decode_string(value.trim()))
+                    } else {
+                        None
+                    }
+                })
+        } else {
+            return None;
+        }
     }
 
     /// Parses a single attachment from the body content.
@@ -366,10 +385,14 @@ impl<'a> SectionExtractor<'a> {
                 let attachment_encoding: Encoding = (&other.transfer_encoding).into();
                 let content_id = other.id.clone().map(|cow| cow.into_owned());
                 let inline = disposition.ty.eq_ignore_ascii_case("inline");
+                let mut filename = Self::get_file_name_disposition(&common.disposition);
+                if filename.is_none() {
+                    filename = Self::get_file_name(&common.ty)
+                }
 
                 Some(ImapAttachment::new(
                     segment,
-                    Self::get_file_name(&common.ty),
+                    filename,
                     other.octets as usize,
                     common.ty.subtype.to_string(),
                     attachment_encoding,
