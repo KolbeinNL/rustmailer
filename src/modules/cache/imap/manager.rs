@@ -13,9 +13,9 @@ use crate::modules::account::migration::AccountModel;
 use crate::modules::cache::imap::address::AddressEntity;
 use crate::modules::cache::imap::flags_to_hash;
 use crate::modules::cache::imap::mailbox::EnvelopeFlag;
+use crate::modules::cache::imap::migration::EmailEnvelopeV3;
 use crate::modules::cache::imap::minimal::MinimalEnvelope;
 use crate::modules::cache::imap::thread::EmailThread;
-use crate::modules::cache::imap::migration::EmailEnvelopeV3;
 use crate::modules::context::Initialize;
 use crate::modules::error::RustMailerResult;
 use crate::modules::hook::channel::{Event, EVENT_CHANNEL};
@@ -131,7 +131,14 @@ impl EnvelopeFlagsManager {
         result
     }
 
-    pub async fn modify_flags(uids: Vec<u32>, account_id: u64, mailbox_id: u64, overwrite_flags: Option<Vec<EnvelopeFlag>>, added_flags: Option<Vec<EnvelopeFlag>>, removed_flags: Option<Vec<EnvelopeFlag>>) -> RustMailerResult<()> {
+    pub async fn modify_flags(
+        uids: Vec<u32>,
+        account_id: u64,
+        mailbox_id: u64,
+        overwrite_flags: Option<Vec<EnvelopeFlag>>,
+        added_flags: Option<Vec<EnvelopeFlag>>,
+        removed_flags: Option<Vec<EnvelopeFlag>>,
+    ) -> RustMailerResult<()> {
         for uid in uids {
             let mail = EmailEnvelopeV3::find(account_id, mailbox_id, uid).await?;
             if let Some(mail) = mail {
@@ -154,7 +161,8 @@ impl EnvelopeFlagsManager {
                     flags_set.into_iter().collect()
                 };
                 let flags_hash = flags_to_hash(&new_flags);
-                EmailEnvelopeV3::update_flags(account_id, mailbox_id, uid, &new_flags, flags_hash).await?;
+                EmailEnvelopeV3::update_flags(account_id, mailbox_id, uid, &new_flags, flags_hash)
+                    .await?;
                 MinimalEnvelope::update_flags(account_id, mailbox_id, uid, flags_hash).await?;
                 Self::update_flag_change(account_id, mailbox_id, uid, flags_hash);
             }
