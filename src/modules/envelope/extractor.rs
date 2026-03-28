@@ -67,7 +67,7 @@ pub fn extract_envelope(
         )
     })?;
 
-    let envelope = EmailEnvelopeV3 {
+    let mut envelope = EmailEnvelopeV3 {
         account_id,
         mailbox_id: mailbox_id(account_id, mailbox_name),
         mailbox_name: mailbox_name.into(),
@@ -103,6 +103,7 @@ pub fn extract_envelope(
         mid: None,
         labels: vec![],
     };
+    envelope.thread_id = envelope.compute_thread_id();
 
     Ok(envelope)
 }
