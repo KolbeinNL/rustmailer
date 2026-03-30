@@ -338,8 +338,8 @@ impl<'a> SectionExtractor<'a> {
     }
 
     /// Retrieves the file name from the content type if it exists.
-    fn get_file_name(disposition: &ContentType<'a>) -> Option<String> {
-        disposition
+    fn get_file_name(ty: &ContentType<'a>) -> Option<String> {
+        ty
             .params
             .as_ref()?
             .iter()
