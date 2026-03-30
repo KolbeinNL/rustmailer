@@ -16,7 +16,7 @@ use tokio_io_timeout::TimeoutStream;
 use tokio_socks::tcp::Socks5Stream;
 use tracing::error;
 
-pub(crate) const TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(3600);
 
 pub(crate) async fn establish_tcp_connection_with_timeout(
     address: SocketAddr,
