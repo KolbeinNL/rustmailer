@@ -28,7 +28,7 @@ impl bb8::ManageConnection for ImapConnectionManager {
         if conn.is_bad {
             return Err(raise_error!(format!("Connection marked broken"), ErrorCode::ImapCommandFailed));
         }
-        match tokio::time::timeout(Duration::from_secs(5), conn.noop()).await {
+        match tokio::time::timeout(Duration::from_secs(5), conn.run_command_and_check_ok("NOOP")).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => {
                 error!("IMAP connection validation failed: {:?}", e);
