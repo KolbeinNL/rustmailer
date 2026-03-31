@@ -29,6 +29,8 @@ use mime_guess::from_ext;
 use poem_openapi::Object;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
+use tracing::warn;
+// use encoding_rs::Encoding;
 
 const MAX_BODY_SIZE: usize = 2 * 1024 * 1024;
 
@@ -244,7 +246,7 @@ async fn read_text_from_reader(
     let truncated = bytes_read < actual_size;
     let content = match std::str::from_utf8(&buffer[..bytes_read]) {
         Ok(valid_str) => valid_str.into(),
-        Err(_) => "???".into(),
+        Err(_) => "{Error, cannot parse}".into(),
     };
     Ok(PlainText { content, truncated })
 }
@@ -260,15 +262,27 @@ async fn read_html_from_reader(
         .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
     let content = match std::str::from_utf8(&buffer[..bytes_read]) {
         Ok(valid_str) => valid_str.into(),
-        Err(_) => "???".into(),
+        Err(_) => "{Error, cannot parse}".into(),
     };
     Ok(content)
 }
 
 fn to_string(data: &[u8]) -> RustMailerResult<String> {
+    // TODO: Handle charset encoding properly instead of assuming UTF-8. This requires fetching the charset information from the email body part metadata and using an appropriate decoder. For now, we will assume UTF-8 encoding and map the bytes to a char array if it isn't, which is common but not guaranteed.
+    // if let Some(enc) = encoding_rs::Encoding::for_label(charset.as_bytes()) {
+    //     let (cow, _, _) = enc.decode(bytes);
+    //     return cow.into_owned();
+    // }
     let content = match std::str::from_utf8(data) {
         Ok(valid_str) => valid_str.into(),
-        Err(_) => "???".into(),
+        Err(e) => {
+            warn!("Failed to convert bytes to string: {:#?} length: {}", e, data.len());
+            // raise_error!(
+            //     format!("Failed to convert bytes to string: {:#?}", e),
+            //     ErrorCode::InternalError
+            // );
+            data.iter().map(|&c| c as char).collect()
+        } ,
     };
     Ok(content)
 }
