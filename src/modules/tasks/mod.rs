@@ -2,6 +2,7 @@
 // Licensed under RustMailer License Agreement v1.0
 // Unauthorized copying, modification, or distribution is prohibited.
 
+use crate::modules::context::tasks::ImapHeartBeatTask;
 use crate::modules::context::RustMailTask;
 use crate::modules::database::snapshot::task::DatabaseSnapshotTask;
 use crate::modules::overview::clean::MetricsCleanTask;
@@ -26,5 +27,6 @@ impl PeriodicTasks {
         DatabaseSnapshotTask::start();
         MetricsSaveTask::start();
         MetricsCleanTask::start();
+        ImapHeartBeatTask::start();
     }
 }

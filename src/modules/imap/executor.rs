@@ -775,6 +775,34 @@ impl ImapExecutor {
         self.expunge_mailbox(mailbox_name).await
     }
 
+    pub async fn touch_connection(&self) -> RustMailerResult<()> {
+        let state = self.pool.state();
+        let idle_count = state.idle_connections;
+
+        if idle_count == 0 {
+            let _ = self.pool.get().await;
+            return Ok(());
+        }
+
+        let touch_limit = std::cmp::min(idle_count as usize, 5);
+        let mut active_conns = Vec::with_capacity(touch_limit);
+
+        for _ in 0..touch_limit {
+            if let Ok(Ok(conn)) =
+                tokio::time::timeout(std::time::Duration::from_secs(10), self.pool.get()).await
+            {
+                active_conns.push(conn);
+            }
+        }
+
+        debug!(
+            idle_total = idle_count,
+            touched = active_conns.len(),
+            "IMAP connections refreshed."
+        );
+        Ok(())
+    }
+
     pub async fn uid_search(
         &self,
         mailbox_name: &str,

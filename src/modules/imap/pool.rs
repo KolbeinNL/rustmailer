@@ -26,9 +26,17 @@ impl bb8::ManageConnection for ImapConnectionManager {
     // call this function before using the connection
     async fn is_valid(&self, conn: &mut Self::Connection) -> RustMailerResult<()> {
         if conn.is_bad {
-            return Err(raise_error!(format!("Connection marked broken"), ErrorCode::ImapCommandFailed));
+            return Err(raise_error!(
+                format!("Connection marked broken"),
+                ErrorCode::ImapCommandFailed
+            ));
         }
-        match tokio::time::timeout(Duration::from_secs(5), conn.run_command_and_check_ok("NOOP")).await {
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            conn.run_command_and_check_ok("NOOP"),
+        )
+        .await
+        {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => {
                 error!("IMAP connection validation failed: {:?}", e);
@@ -62,6 +70,7 @@ pub async fn build_imap_pool(account_id: u64) -> RustMailerResult<Pool<ImapConne
         .max_lifetime(Duration::from_secs(1800))
         .retry_connection(true)
         .max_size(8)
+        .min_idle(Some(2))
         .test_on_check_out(true)
         .build(manager)
         .await?;
