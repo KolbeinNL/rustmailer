@@ -491,6 +491,10 @@ async fn sync_recent_envelope_flags(
         .uid_fetch_uid_and_flags(uid_set.as_str(), &remote_mailbox.encoded_name())
         .await?;
     let remote_uid_flags = parse_fetch_metadata(fetches, false)?;
+    let remote_uids_set = remote_uid_flags
+        .iter()
+        .map(|(uid, _)| *uid)
+        .collect::<AHashSet<u32>>();
     let update_flags = find_flag_updates(&local_uid_flags, remote_uid_flags);
     if !update_flags.is_empty() {
         info!(
@@ -504,6 +508,16 @@ async fn sync_recent_envelope_flags(
         EnvelopeFlagsManager::update_envelope_flags(account, local_mailbox.id, update_flags)
             .await?;
     }
+
+    cleanup_missing_remote_emails(
+        account,
+        local_mailbox.id,
+        &local_mailbox.name,
+        &local_uid_flags,
+        &remote_uids_set,
+    )
+    .await?;
+
     Ok(())
 }
 
