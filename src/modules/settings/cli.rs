@@ -369,6 +369,14 @@ pub struct Settings {
     #[clap(
         long,
         env,
+        default_value = "true",
+        help = "Periodically send NOOP commands to keep IMAP connections alive"
+    )]
+    pub rustmailer_imap_keepalive_enabled: bool,
+
+    #[clap(
+        long,
+        env,
         default_value = "900",
         help = "Interval in seconds to persist in-memory metadata to disk (minimum: 60)",
         value_parser = clap::value_parser!(u64).range(60..)
@@ -432,6 +440,7 @@ impl Settings {
             rustmailer_ansi_logs: false,
             rustmailer_json_logs: false,
             rustmailer_log_to_file: false,
+            rustmailer_imap_keepalive_enabled: false,
             rustmailer_max_server_log_files: 5,
             rustmailer_send_mail_workers: 10,
             rustmailer_encrypt_password: "change-this-default-password-now".into(),

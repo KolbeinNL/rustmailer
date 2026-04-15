@@ -7,6 +7,8 @@ use crate::modules::error::RustMailerResult;
 pub mod controller;
 pub mod executors;
 pub mod status;
+pub mod tasks;
+
 
 pub trait Initialize {
     async fn initialize() -> RustMailerResult<()>;
