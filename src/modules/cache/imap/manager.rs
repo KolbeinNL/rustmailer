@@ -90,20 +90,41 @@ impl EnvelopeFlagsManager {
         MinimalEnvelope::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
         AddressEntity::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
         EmailThread::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
-        if let Some(mailboxes_map) = FLAGS_STATE_MAP.get(&account_id) {
-            if let Some(flags_map) = mailboxes_map.get(&mailbox_id) {
-                for uid in to_delete_uid {
-                    flags_map.remove(uid);
-                }
-                if flags_map.is_empty() {
-                    mailboxes_map.remove(&mailbox_id);
-                }
-            }
-            if mailboxes_map.is_empty() {
-                FLAGS_STATE_MAP.remove(&account_id);
-            }
-        }
+        Self::clean_flags_state(account_id, mailbox_id, to_delete_uid);
         Ok(())
+    }
+
+    /// Remove `to_delete_uid` from the in-memory flags cache, pruning the
+    /// mailbox / account levels that become empty.
+    ///
+    /// All read guards (`Ref`) obtained while removing the uids are released
+    /// BEFORE any map-level `remove()` runs: calling `remove()` (write lock) on
+    /// a shard while a `Ref` (read lock) to the SAME shard is still held
+    /// self-deadlocks the calling thread — this is the 1.7.2 "sync pipeline
+    /// hangs after local-deletion batch" bug. The subsequent level removals use
+    /// `remove_if`, which re-checks emptiness under the write lock, so entries
+    /// re-inserted by a concurrent writer survive.
+    fn clean_flags_state(account_id: u64, mailbox_id: u64, to_delete_uid: &[UID]) {
+        let mailbox_drained = match FLAGS_STATE_MAP.get(&account_id) {
+            Some(mailboxes_map) => match mailboxes_map.get(&mailbox_id) {
+                Some(flags_map) => {
+                    for uid in to_delete_uid {
+                        flags_map.remove(uid);
+                    }
+                    flags_map.is_empty()
+                }
+                None => false,
+            },
+            None => false,
+        }; // read guards released here
+
+        if mailbox_drained {
+            // Lock order outer→middle matches update_flag_change.
+            if let Some(mailboxes_map) = FLAGS_STATE_MAP.get_mut(&account_id) {
+                mailboxes_map.remove_if(&mailbox_id, |_, uids_map| uids_map.is_empty());
+            }
+            FLAGS_STATE_MAP.remove_if(&account_id, |_, mailboxes_map| mailboxes_map.is_empty());
+        }
     }
 
     /// Clean all data associated with a specific mailbox for a given account.
@@ -261,5 +282,82 @@ impl EnvelopeFlagsManager {
 impl Initialize for EnvelopeFlagsManager {
     async fn initialize() -> RustMailerResult<()> {
         EnvelopeFlagsManager::load_state().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // Unique ids per test so parallel tests never share shards.
+    const T1_ACCT: u64 = 9_900_001;
+    const T1_MB: u64 = 9_900_002;
+    const T2_ACCT: u64 = 9_900_011;
+    const T2_MB_A: u64 = 9_900_012;
+    const T2_MB_B: u64 = 9_900_013;
+
+    /// Regression test for the 1.7.2 sync-pipeline hang: draining a mailbox's
+    /// uid map to EMPTY used to self-deadlock inside clean_flags_state at
+    /// `mailboxes_map.remove(&mailbox_id)` — a read guard was held on the very
+    /// shard the remove() needed to write-lock. The deletion-path DB logs
+    /// ("Deleted N envelopes...") had already printed, so the engine went
+    /// silent with no error while still reporting healthy.
+    ///
+    /// The deadlock blocks the calling thread in sync code, so the test runs
+    /// the production path on a dedicated thread with a timeout: a regression
+    /// fails the test instead of hanging the suite forever.
+    #[test]
+    fn clean_flags_state_survives_draining_last_uids() {
+        EnvelopeFlagsManager::update_flag_change(T1_ACCT, T1_MB, 7, 42);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            EnvelopeFlagsManager::clean_flags_state(T1_ACCT, T1_MB, &[7]);
+            let _ = tx.send(());
+        });
+
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("clean_flags_state self-deadlocked: the 1.7.2 pipeline hang is back");
+
+        // Draining the mailbox pruned both the mailbox and the account level.
+        assert!(
+            FLAGS_STATE_MAP.get(&T1_ACCT).is_none(),
+            "account level should be pruned after its last mailbox drained"
+        );
+    }
+
+    /// Draining ONE mailbox must prune only that mailbox's entry; sibling
+    /// mailboxes and the account level survive. Uids that were not part of the
+    /// deletion stay cached.
+    #[test]
+    fn clean_flags_state_prunes_only_the_drained_mailbox() {
+        EnvelopeFlagsManager::update_flag_change(T2_ACCT, T2_MB_A, 1, 10);
+        EnvelopeFlagsManager::update_flag_change(T2_ACCT, T2_MB_A, 2, 20);
+        EnvelopeFlagsManager::update_flag_change(T2_ACCT, T2_MB_B, 3, 30);
+
+        // Partial deletion: MB_A still holds uid 2, nothing is pruned.
+        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[1]);
+        assert!(FLAGS_STATE_MAP.get(&T2_ACCT).is_some());
+        assert_eq!(
+            EnvelopeFlagsManager::get_uid_map(T2_ACCT, T2_MB_A, 0).len(),
+            1
+        );
+
+        // Full drain of MB_A: mailbox level pruned, sibling and account stay.
+        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[2]);
+        assert!(FLAGS_STATE_MAP.get(&T2_ACCT).is_some());
+        assert_eq!(
+            EnvelopeFlagsManager::get_uid_map(T2_ACCT, T2_MB_A, 0).len(),
+            0
+        );
+        assert_eq!(
+            EnvelopeFlagsManager::get_uid_map(T2_ACCT, T2_MB_B, 0).len(),
+            1
+        );
+
+        // Cleanup so the account-level pruning path is also covered.
+        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_B, &[3]);
+        assert!(FLAGS_STATE_MAP.get(&T2_ACCT).is_none());
     }
 }
