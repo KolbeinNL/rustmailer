@@ -252,7 +252,7 @@ impl DiskCache {
         let to_delete = select_items_to_delete(&cache_items, &disk_space);
         for item in to_delete {
             if let Err(e) = Self::remove_cache_item(cache_dir_str, &item).await {
-                error!("Cache item cleanup failed for key={}: {}", item.key, e);
+                debug!("Cache item cleanup failed for key={}: {}", item.key, e);
                 continue; // Continue with next item instead of returning
             }
         }

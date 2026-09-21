@@ -9,7 +9,7 @@ use crate::raise_error;
 use async_imap::Session;
 use bb8::Pool;
 use std::time::Duration;
-use tracing::{error, warn};
+use tracing::{debug};
 
 impl bb8::ManageConnection for ImapConnectionManager {
     type Connection = MyImapConnection;
@@ -39,7 +39,7 @@ impl bb8::ManageConnection for ImapConnectionManager {
         {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => {
-                error!("IMAP connection validation failed: {:?}", e);
+                debug!("IMAP connection validation failed: {:?}", e);
                 conn.is_bad = true;
                 Err(raise_error!(
                     format!("{:#?}", e),
@@ -47,7 +47,7 @@ impl bb8::ManageConnection for ImapConnectionManager {
                 ))
             }
             Err(_) => {
-                warn!("IMAP NOOP timeout");
+                debug!("IMAP NOOP timeout");
                 conn.is_bad = true;
                 Err(raise_error!(
                     "NOOP timeout".into(),
