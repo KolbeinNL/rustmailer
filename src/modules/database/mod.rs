@@ -9,7 +9,7 @@ use crate::modules::cache::disk::CacheItem;
 use crate::modules::error::RustMailerResult;
 use crate::modules::hook::entity::EventHooks;
 use crate::modules::license::License;
-use crate::modules::oauth2::entity::OAuth2;
+use crate::modules::oauth2::entity::{OAuth2, OAuth2V2};
 use crate::modules::oauth2::pending::OAuth2PendingEntity;
 use crate::modules::oauth2::token::OAuth2AccessToken;
 use crate::modules::settings::proxy::Proxy;
@@ -29,6 +29,9 @@ use transaction::RwTransaction;
 use super::error::code::ErrorCode;
 pub mod backup;
 pub mod manager;
+#[allow(dead_code)] // synchronous helpers kept for direct callers / tests; cleanup uses the queue
+pub mod safe_delete;
+pub use safe_delete::enqueue_delete_secondary_impl;
 pub mod snapshot;
 #[cfg(test)]
 mod tests;
@@ -65,6 +68,7 @@ impl ModelsAdapter {
         self.register_model::<EmailTemplate>();
         self.register_model::<Mta>();
         self.register_model::<OAuth2>();
+        self.register_model::<OAuth2V2>();
         self.register_model::<OAuth2PendingEntity>();
         self.register_model::<OAuth2AccessToken>();
         self.register_model::<EventHooks>();
@@ -245,21 +249,6 @@ pub async fn async_find_impl<T: ToInput + Clone + Send + 'static>(
     })
     .await
     .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-}
-
-pub fn find_impl<T: ToInput + Clone + Send + 'static>(
-    database: &Arc<Database<'static>>,
-    key: &str,
-) -> RustMailerResult<Option<T>> {
-    let db = database.clone();
-    let r_transaction = db
-        .r_transaction()
-        .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
-    let entity: Option<T> = r_transaction
-        .get()
-        .primary(key)
-        .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
-    Ok(entity)
 }
 
 pub async fn delete_impl<T: ToInput + Clone + Send + 'static>(

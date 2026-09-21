@@ -2,10 +2,9 @@
 // Licensed under RustMailer License Agreement v1.0
 // Unauthorized copying, modification, or distribution is prohibited.
 
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use futures::future::join_all;
-use itertools::Itertools;
 use native_db::*;
 use native_model::{native_model, Model};
 use poem_openapi::Object;
@@ -23,7 +22,10 @@ use crate::{
                 outlook::sync::envelope::OutlookEnvelope,
             },
         },
-        database::{batch_delete_impl, manager::DB_MANAGER, paginate_secondary_scan_impl},
+        database::{
+            batch_delete_impl, enqueue_delete_secondary_impl, manager::DB_MANAGER,
+            paginate_secondary_scan_impl, safe_delete::RowFilter,
+        },
         error::{code::ErrorCode, RustMailerResult},
         rest::response::DataPage,
         utils::envelope_hash,
@@ -74,51 +76,34 @@ impl EmailThread {
     }
 
     pub async fn clean_mailbox_envelopes(account_id: u64, mailbox_id: u64) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 200;
-        loop {
-            let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
-                let to_delete: Vec<EmailThread> = rw
-                    .scan()
-                    .secondary(EmailThreadKey::mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .start_with(mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .filter_map(Result::ok) // filter only Ok values
-                    .filter(|e: &EmailThread| e.account_id == account_id)
-                    .take(BATCH_SIZE)
-                    .collect();
-                Ok(to_delete)
-            })
-            .await?;
-            // If this batch is empty, break the loop
-            if deleted == 0 {
-                break;
-            }
-        }
+        const BATCH_SIZE: usize = 50;
+        let filter: RowFilter<EmailThread> =
+            Arc::new(move |e: &EmailThread| e.account_id == account_id);
+        enqueue_delete_secondary_impl(
+            DB_MANAGER.envelope_db(),
+            EmailThreadKey::mailbox_id,
+            mailbox_id,
+            filter,
+            BATCH_SIZE,
+            format!(
+                "EmailThread::clean_mailbox_envelopes account_id={} mailbox_id={}",
+                account_id, mailbox_id
+            ),
+        )?;
         Ok(())
     }
 
     pub async fn clean_account(account_id: u64) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 200;
-        loop {
-            let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
-                let to_delete: Vec<EmailThread> = rw
-                    .scan()
-                    .secondary(EmailThreadKey::account_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .start_with(account_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .take(BATCH_SIZE)
-                    .try_collect()
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
-                Ok(to_delete)
-            })
-            .await?;
-            // If this batch is empty, break the loop
-            if deleted == 0 {
-                break;
-            }
-        }
+        const BATCH_SIZE: usize = 50;
+        let filter: RowFilter<EmailThread> = Arc::new(|_: &EmailThread| true);
+        enqueue_delete_secondary_impl(
+            DB_MANAGER.envelope_db(),
+            EmailThreadKey::account_id,
+            account_id,
+            filter,
+            BATCH_SIZE,
+            format!("EmailThread::clean_account account_id={}", account_id),
+        )?;
         Ok(())
     }
 
@@ -127,47 +112,29 @@ impl EmailThread {
         mailbox_id: u64,
         to_delete_uid: &[u32],
     ) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 200;
-        let mut total_deleted = 0usize;
-        let start_time = Instant::now();
-
-        let to_delete_set: HashSet<u64> = to_delete_uid
+        let hashes: Vec<u64> = to_delete_uid
             .iter()
             .map(|uid| envelope_hash(account_id, mailbox_id, *uid))
             .collect();
 
-        let to_delete_set = Arc::new(to_delete_set);
-        loop {
-            let to_delete_set = to_delete_set.clone();
-            let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
-                let to_delete: Vec<EmailThread> = rw
-                    .scan()
-                    .secondary(EmailThreadKey::mailbox_id)
+        let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
+            let mut to_delete = Vec::with_capacity(hashes.len());
+            for hash in hashes {
+                if let Some(thread) = rw
+                    .get()
+                    .secondary::<EmailThread>(EmailThreadKey::envelope_id, hash)
                     .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .start_with(mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .filter_map(Result::ok) // filter only Ok values
-                    .filter(|e: &EmailThread| {
-                        e.account_id == account_id && to_delete_set.contains(&e.envelope_id)
-                    })
-                    .take(BATCH_SIZE)
-                    .collect();
-                Ok(to_delete)
-            })
-            .await?;
-            total_deleted += deleted;
-            // If this batch is empty, break the loop
-            if deleted == 0 {
-                break;
+                {
+                    to_delete.push(thread);
+                }
             }
-        }
+            Ok(to_delete)
+        })
+        .await?;
 
         info!(
-            "Finished deleting thread entities for mailbox_id={} account_id={} total_deleted={} in {:?}",
-            mailbox_id,
-            account_id,
-            total_deleted,
-            start_time.elapsed()
+            "Deleted {} thread entities for account_id={} mailbox_id={}",
+            deleted, account_id, mailbox_id
         );
         Ok(())
     }

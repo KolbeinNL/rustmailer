@@ -1381,6 +1381,14 @@ service MtaService {
   rpc SendTestEmail(SendTestEmailRequest) returns (Empty);
 }
 
+// OAuth2GrantType defines the type of OAuth2 grant flow.
+enum OAuth2GrantType {
+  // Authorization Code Flow with PKCE — requires user interaction.
+  AUTHORIZATION_CODE = 0;
+  // Client Credentials Flow — no user interaction, suitable for service-to-service auth.
+  CLIENT_CREDENTIALS = 1;
+}
+
 // OAuth2 represents an OAuth2 client configuration.
 message OAuth2 {
   // The unique identifier for the OAuth2 configuration.
@@ -1409,6 +1417,8 @@ message OAuth2 {
   int64 updated_at = 12;
   // Optional: The ID of a proxy to use for OAuth2 related requests.
   optional uint64 use_proxy = 13;
+  // The grant type used for this OAuth2 configuration.
+  OAuth2GrantType grant_type = 14;
 }
 
 // GetOAuth2Request is used to retrieve a specific OAuth2 configuration by its ID.
@@ -1445,6 +1455,8 @@ message OAuth2CreateRequest {
   bool enabled = 10;
   // Optional: The ID of a proxy to use for OAuth2 related requests.
   optional uint64 use_proxy = 11;
+  // The grant type to use for authentication.
+  OAuth2GrantType grant_type = 15;
 }
 
 // UpdateOAuth2Request defines the parameters for updating an existing OAuth2 configuration.
@@ -1471,6 +1483,8 @@ message UpdateOAuth2Request {
   optional bool enabled = 10;
   // Optional: The ID of a proxy to use for OAuth2 related requests.
   optional uint64 use_proxy = 11;
+  // Optional: Update the grant type.
+  optional OAuth2GrantType grant_type = 16;
 }
 
 // ListOAuth2Request defines parameters for paginating lists of OAuth2 configurations.
@@ -1509,6 +1523,14 @@ message AuthorizeUrlRequest {
 message AuthorizeUrlResponse {
   // The generated authorization URL.
   string url = 1;
+}
+
+// ClientCredentialsRequest is used to exchange client credentials for an access token.
+message ClientCredentialsRequest {
+  // The ID of the account to associate the token with.
+  uint64 account_id = 1;
+  // The ID of the OAuth2 configuration to use (must have grant_type = CLIENT_CREDENTIALS).
+  uint64 oauth2_id = 2;
 }
 
 // OAuth2AccessToken represents stored OAuth2 access and refresh tokens.
@@ -1572,6 +1594,9 @@ service OAuth2Service {
   rpc CreateAuthorizeUrl(AuthorizeUrlRequest) returns (AuthorizeUrlResponse);
   // Retrieves OAuth2 access and refresh tokens for an account.
   rpc GetOAuth2Tokens(GetOAuth2TokensRequest) returns (OAuth2AccessToken);
+  // Exchanges client credentials for an access token and stores it.
+  // Only applicable for OAuth2 configurations with grant_type = CLIENT_CREDENTIALS.
+  rpc ExchangeClientCredentials(ClientCredentialsRequest) returns (Empty);
   // Upserts an external OAuth2 token for a specified account.
   //
   // If only an access_token is provided, RustMailer stores it directly.
@@ -1955,6 +1980,20 @@ message ForwardEmailRequest {
   SendControl send_control = 14;
 }
 
+// ReplyDraft represents the result of saving a draft email.
+message ReplyDraft {
+  // The message identifier:
+  // - For IMAP accounts, this is the UID of the message;
+  // - For Gmail / Graph API, this is the message ID.
+  string id = 1;
+  // The provider-specific draft identifier.
+  // This is only populated for Gmail API accounts (the Gmail draft ID).
+  // For IMAP and Graph API, use `id` directly.
+  optional string draft_id = 2;
+  // The name of the drafts folder or label where the draft was saved.
+  string draft_folder = 3;
+}
+
 // EmailTask represents a single email sending task managed by the system.
 message EmailTask {
   // The unique identifier for the email task.
@@ -2180,6 +2219,22 @@ message ForwardMailRequest {
   ForwardEmailRequest request = 2;
 }
 
+// SaveDraftRequest is used to create a new draft email without sending it.
+message SaveDraftRequest {
+  // The ID of the account for which the draft is created.
+  uint64 account_id = 1;
+  // The details of the draft email to save.
+  SendEmailRequest request = 2;
+}
+
+// SendDraftRequest is used to send an existing draft email.
+message SendDraftRequest {
+  // The ID of the account that owns the draft.
+  uint64 account_id = 1;
+  // The draft identifier returned by SaveDraft (ReplyDraft.draft_id for Gmail, ReplyDraft.id for others).
+  string id = 2;
+}
+
 // ListTasksRequest defines parameters for listing email tasks with pagination and filtering by status.
 message ListTasksRequest {
   // Optional: The requested page number (1-based).
@@ -2218,6 +2273,10 @@ service SendMailService {
   rpc GetEmailTask (GetTaskRequest) returns (EmailTask);
   // Removes an email task.
   rpc RemoveEmailTask (RemoveTaskRequest) returns (Empty);
+  // Creates a new draft email without sending it.
+  rpc SaveDraft (SaveDraftRequest) returns (ReplyDraft);
+  // Sends an existing draft email.
+  rpc SendDraft (SendDraftRequest) returns (Empty);
 }
 
 // EventType enumerates the types of events that can trigger webhooks.
