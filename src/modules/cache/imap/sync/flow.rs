@@ -515,6 +515,7 @@ async fn sync_recent_envelope_flags(
         &local_mailbox.name,
         &local_uid_flags,
         &remote_uids_set,
+        false
     )
     .await?;
 
@@ -656,6 +657,7 @@ async fn perform_full_sync(
         &local_mailbox.name,
         &local_uid_flags_index,
         &remote_uids_set,
+        true
     )
     .await?;
 
@@ -795,6 +797,7 @@ async fn cleanup_missing_remote_emails(
     mailbox_name: &str,
     local_uid_flags_index: &AHashMap<u32, u64>,
     remote_uid_set: &AHashSet<u32>,
+    full_sync: bool
 ) -> RustMailerResult<()> {
     let uids_to_remove = find_missing_remote_uids(local_uid_flags_index, remote_uid_set);
     if !uids_to_remove.is_empty() {
@@ -805,7 +808,7 @@ async fn cleanup_missing_remote_emails(
             uids_to_remove.len()
         );
 
-        EnvelopeFlagsManager::clean_envelopes(account.id, mailbox_id, &uids_to_remove).await?;
+        EnvelopeFlagsManager::clean_envelopes(account.id, mailbox_id, &uids_to_remove, full_sync).await?;
     }
     Ok(())
 }

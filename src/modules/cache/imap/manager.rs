@@ -85,17 +85,19 @@ impl EnvelopeFlagsManager {
         account_id: u64,
         mailbox_id: u64,
         to_delete_uid: &[u32],
+        full_sync: bool,
     ) -> RustMailerResult<()> {
         if let Some(mailboxes_map) = FLAGS_STATE_MAP.get(&account_id) {
             if let Some(flags_map) = mailboxes_map.get(&mailbox_id) {
                 for uid in to_delete_uid {
                     flags_map.remove(uid);
                 }
-                if flags_map.is_empty() {
+                
+                if flags_map.is_empty() && mailboxes_map.contains_key(&mailbox_id) && full_sync {
                     mailboxes_map.remove(&mailbox_id);
                 }
             }
-            if mailboxes_map.is_empty() {
+            if mailboxes_map.is_empty() && FLAGS_STATE_MAP.contains_key(&account_id) && full_sync {
                 FLAGS_STATE_MAP.remove(&account_id);
             }
         }
