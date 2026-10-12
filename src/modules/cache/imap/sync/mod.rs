@@ -44,6 +44,13 @@ static LAST_STALENESS_REPORT: LazyLock<DashMap<u64, i64>> = LazyLock::new(DashMa
 /// path that returns without setting a sync-end timestamp, which previously
 /// surfaced as hours of silent account dormancy with green health checks
 /// (INCIDENT-2718318811333577).
+///
+/// The last-completed baseline comes from `AccountRunningState::
+/// last_completed_sync_at`. Sync starts deliberately do not clear the `*_end`
+/// timestamps, so a dispatched-but-unfinished or failed sync cannot erase the
+/// previous completion and make this check fall back to
+/// `initial_sync_end_time` (which reported months of phantom dormancy on
+/// 2026-10-07 while the account had synced normally hours earlier).
 async fn report_sync_staleness(account: &AccountModel) -> RustMailerResult<()> {
     let Some(state) = AccountRunningState::get(account.id).await? else {
         return Ok(());
@@ -52,15 +59,7 @@ async fn report_sync_staleness(account: &AccountModel) -> RustMailerResult<()> {
     if !state.is_initial_sync_completed {
         return Ok(());
     }
-    let last_completed = [
-        state.last_full_sync_end,
-        state.last_incremental_sync_end,
-        state.initial_sync_end_time,
-    ]
-    .into_iter()
-    .flatten()
-    .max();
-    let Some(last_completed) = last_completed else {
+    let Some(last_completed) = state.last_completed_sync_at() else {
         return Ok(());
     };
     let now = utc_now!();
