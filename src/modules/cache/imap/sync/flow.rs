@@ -491,6 +491,10 @@ async fn sync_recent_envelope_flags(
         .uid_fetch_uid_and_flags(uid_set.as_str(), &remote_mailbox.encoded_name())
         .await?;
     let remote_uid_flags = parse_fetch_metadata(fetches, false)?;
+    let remote_uids_set = remote_uid_flags
+        .iter()
+        .map(|(uid, _)| *uid)
+        .collect::<AHashSet<u32>>();
     let update_flags = find_flag_updates(&local_uid_flags, remote_uid_flags);
     if !update_flags.is_empty() {
         info!(
@@ -504,6 +508,17 @@ async fn sync_recent_envelope_flags(
         EnvelopeFlagsManager::update_envelope_flags(account, local_mailbox.id, update_flags)
             .await?;
     }
+
+    cleanup_missing_remote_emails(
+        account,
+        local_mailbox.id,
+        &local_mailbox.name,
+        &local_uid_flags,
+        &remote_uids_set,
+        false
+    )
+    .await?;
+
     Ok(())
 }
 
@@ -642,6 +657,7 @@ async fn perform_full_sync(
         &local_mailbox.name,
         &local_uid_flags_index,
         &remote_uids_set,
+        true
     )
     .await?;
 
@@ -781,6 +797,7 @@ async fn cleanup_missing_remote_emails(
     mailbox_name: &str,
     local_uid_flags_index: &AHashMap<u32, u64>,
     remote_uid_set: &AHashSet<u32>,
+    full_sync: bool
 ) -> RustMailerResult<()> {
     let uids_to_remove = find_missing_remote_uids(local_uid_flags_index, remote_uid_set);
     if !uids_to_remove.is_empty() {
@@ -791,7 +808,7 @@ async fn cleanup_missing_remote_emails(
             uids_to_remove.len()
         );
 
-        EnvelopeFlagsManager::clean_envelopes(account.id, mailbox_id, &uids_to_remove).await?;
+        EnvelopeFlagsManager::clean_envelopes(account.id, mailbox_id, &uids_to_remove, full_sync).await?;
     }
     Ok(())
 }

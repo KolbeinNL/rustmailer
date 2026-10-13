@@ -85,12 +85,13 @@ impl EnvelopeFlagsManager {
         account_id: u64,
         mailbox_id: u64,
         to_delete_uid: &[u32],
+        full_sync: bool,
     ) -> RustMailerResult<()> {
         EmailEnvelopeV3::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
         MinimalEnvelope::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
         AddressEntity::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
         EmailThread::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
-        Self::clean_flags_state(account_id, mailbox_id, to_delete_uid);
+        Self::clean_flags_state(account_id, mailbox_id, to_delete_uid, full_sync);
         Ok(())
     }
 
@@ -104,7 +105,7 @@ impl EnvelopeFlagsManager {
     /// hangs after local-deletion batch" bug. The subsequent level removals use
     /// `remove_if`, which re-checks emptiness under the write lock, so entries
     /// re-inserted by a concurrent writer survive.
-    fn clean_flags_state(account_id: u64, mailbox_id: u64, to_delete_uid: &[UID]) {
+    fn clean_flags_state(account_id: u64, mailbox_id: u64, to_delete_uid: &[UID], full_sync: bool) {
         let mailbox_drained = match FLAGS_STATE_MAP.get(&account_id) {
             Some(mailboxes_map) => match mailboxes_map.get(&mailbox_id) {
                 Some(flags_map) => {
@@ -118,7 +119,7 @@ impl EnvelopeFlagsManager {
             None => false,
         }; // read guards released here
 
-        if mailbox_drained {
+        if mailbox_drained && full_sync {
             // Lock order outer→middle matches update_flag_change.
             if let Some(mailboxes_map) = FLAGS_STATE_MAP.get_mut(&account_id) {
                 mailboxes_map.remove_if(&mailbox_id, |_, uids_map| uids_map.is_empty());
@@ -313,7 +314,7 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            EnvelopeFlagsManager::clean_flags_state(T1_ACCT, T1_MB, &[7]);
+            EnvelopeFlagsManager::clean_flags_state(T1_ACCT, T1_MB, &[7], true);
             let _ = tx.send(());
         });
 
@@ -337,7 +338,7 @@ mod tests {
         EnvelopeFlagsManager::update_flag_change(T2_ACCT, T2_MB_B, 3, 30);
 
         // Partial deletion: MB_A still holds uid 2, nothing is pruned.
-        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[1]);
+        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[1], true);
         assert!(FLAGS_STATE_MAP.get(&T2_ACCT).is_some());
         assert_eq!(
             EnvelopeFlagsManager::get_uid_map(T2_ACCT, T2_MB_A, 0).len(),
@@ -345,7 +346,7 @@ mod tests {
         );
 
         // Full drain of MB_A: mailbox level pruned, sibling and account stay.
-        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[2]);
+        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[2], true);
         assert!(FLAGS_STATE_MAP.get(&T2_ACCT).is_some());
         assert_eq!(
             EnvelopeFlagsManager::get_uid_map(T2_ACCT, T2_MB_A, 0).len(),
@@ -357,7 +358,7 @@ mod tests {
         );
 
         // Cleanup so the account-level pruning path is also covered.
-        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_B, &[3]);
+        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_B, &[3], true);
         assert!(FLAGS_STATE_MAP.get(&T2_ACCT).is_none());
     }
 }
