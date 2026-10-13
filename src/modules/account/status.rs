@@ -66,6 +66,20 @@ impl AccountRunningState {
         async_find_impl(DB_MANAGER.meta_db(), account_id).await
     }
 
+    /// Timestamp of the most recent completed sync of any kind (full,
+    /// incremental, or the initial one). Backs the staleness watchdog in
+    /// `cache::imap::sync::report_sync_staleness`.
+    pub fn last_completed_sync_at(&self) -> Option<i64> {
+        [
+            self.last_full_sync_end,
+            self.last_incremental_sync_end,
+            self.initial_sync_end_time,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+    }
+
     async fn update_account_running_state(
         account_id: u64,
         updater: impl FnOnce(&AccountRunningState) -> RustMailerResult<AccountRunningState>
@@ -166,8 +180,14 @@ impl AccountRunningState {
     pub async fn set_full_sync_start(account_id: u64) -> RustMailerResult<()> {
         Self::update_account_running_state(account_id, move |current| {
             let mut updated = current.clone();
+            // `last_full_sync_end` is deliberately preserved: a dispatched sync
+            // that has not finished yet must not erase the record of when the
+            // last sync completed. Clearing it here made the staleness
+            // watchdog fall back to `initial_sync_end_time` and report months
+            // of dormancy for an account whose latest sync merely failed or
+            // was still running (report from 2026-10-07). "In progress" is
+            // already expressed by `last_full_sync_start > last_full_sync_end`.
             updated.last_full_sync_start = utc_now!();
-            updated.last_full_sync_end = None;
             Ok(updated)
         })
         .await
@@ -185,8 +205,10 @@ impl AccountRunningState {
     pub async fn set_incremental_sync_start(account_id: u64) -> RustMailerResult<()> {
         Self::update_account_running_state(account_id, move |current| {
             let mut updated = current.clone();
+            // See `set_full_sync_start`: the end timestamp must survive a new
+            // sync being dispatched, or the staleness watchdog loses its
+            // baseline whenever a sync starts but does not complete.
             updated.last_incremental_sync_start = utc_now!();
-            updated.last_incremental_sync_end = None;
             Ok(updated)
         })
         .await
@@ -226,6 +248,45 @@ impl AccountRunningState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_last_completed_sync_at_takes_max_of_all_kinds() {
+        let account_state = AccountRunningState {
+            account_id: 1000u64,
+            last_full_sync_end: Some(2000),
+            last_incremental_sync_end: Some(5000),
+            initial_sync_end_time: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(account_state.last_completed_sync_at(), Some(5000));
+    }
+
+    #[test]
+    fn test_last_completed_sync_at_ignores_none_ends() {
+        // A dispatched-but-unfinished sync leaves the `*_end` timestamps at
+        // their previous values; the baseline must survive that.
+        let account_state = AccountRunningState {
+            account_id: 1000u64,
+            last_full_sync_start: 9000,
+            last_full_sync_end: Some(2000),
+            last_incremental_sync_start: 8000,
+            last_incremental_sync_end: None,
+            initial_sync_end_time: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(account_state.last_completed_sync_at(), Some(2000));
+    }
+
+    #[test]
+    fn test_last_completed_sync_at_all_none() {
+        let account_state = AccountRunningState {
+            account_id: 1000u64,
+            last_full_sync_start: 9000,
+            last_incremental_sync_start: 8000,
+            ..Default::default()
+        };
+        assert_eq!(account_state.last_completed_sync_at(), None);
+    }
 
     #[test]
     fn test_insert_single_error() {

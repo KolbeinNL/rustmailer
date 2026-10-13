@@ -18,9 +18,9 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
           - target: x86_64-apple-darwin
             os: macos-latest
           # - target: x86_64-pc-windows-msvc
@@ -29,6 +29,21 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      
+      - name: Verify Cargo.toml version matches git tag
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME}"
+
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -n1 | cut -d '"' -f2)
+
+          echo "Git tag version:    $TAG_VERSION"
+          echo "Cargo.toml version: $CARGO_VERSION"
+
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Version mismatch! Git tag ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi  
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
@@ -101,7 +116,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Download build artifacts
@@ -136,7 +151,7 @@ jobs:
   docker:
     name: Build and Push Docker Image
     needs: [build, release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     
     steps:
       - name: Checkout code
