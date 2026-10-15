@@ -85,13 +85,12 @@ impl EnvelopeFlagsManager {
         account_id: u64,
         mailbox_id: u64,
         to_delete_uid: &[u32],
-        full_sync: bool,
     ) -> RustMailerResult<()> {
         EmailEnvelopeV3::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
         MinimalEnvelope::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
         AddressEntity::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
         EmailThread::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
-        Self::clean_flags_state(account_id, mailbox_id, to_delete_uid, full_sync);
+        Self::clean_flags_state(account_id, mailbox_id, to_delete_uid);
         Ok(())
     }
 
@@ -105,7 +104,7 @@ impl EnvelopeFlagsManager {
     /// hangs after local-deletion batch" bug. The subsequent level removals use
     /// `remove_if`, which re-checks emptiness under the write lock, so entries
     /// re-inserted by a concurrent writer survive.
-    fn clean_flags_state(account_id: u64, mailbox_id: u64, to_delete_uid: &[UID], full_sync: bool) {
+    fn clean_flags_state(account_id: u64, mailbox_id: u64, to_delete_uid: &[UID]) {
         let mailbox_drained = match FLAGS_STATE_MAP.get(&account_id) {
             Some(mailboxes_map) => match mailboxes_map.get(&mailbox_id) {
                 Some(flags_map) => {
@@ -119,7 +118,7 @@ impl EnvelopeFlagsManager {
             None => false,
         }; // read guards released here
 
-        if mailbox_drained && full_sync {
+        if mailbox_drained {
             // Lock order outer→middle matches update_flag_change.
             if let Some(mailboxes_map) = FLAGS_STATE_MAP.get_mut(&account_id) {
                 mailboxes_map.remove_if(&mailbox_id, |_, uids_map| uids_map.is_empty());
@@ -297,6 +296,8 @@ mod tests {
     const T2_ACCT: u64 = 9_900_011;
     const T2_MB_A: u64 = 9_900_012;
     const T2_MB_B: u64 = 9_900_013;
+    const T4_ACCT: u64 = 9_900_041;
+    const T4_MB: u64 = 9_900_042;
 
     /// Regression test for the 1.7.2 sync-pipeline hang: draining a mailbox's
     /// uid map to EMPTY used to self-deadlock inside clean_flags_state at
@@ -314,7 +315,7 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            EnvelopeFlagsManager::clean_flags_state(T1_ACCT, T1_MB, &[7], true);
+            EnvelopeFlagsManager::clean_flags_state(T1_ACCT, T1_MB, &[7]);
             let _ = tx.send(());
         });
 
@@ -338,7 +339,7 @@ mod tests {
         EnvelopeFlagsManager::update_flag_change(T2_ACCT, T2_MB_B, 3, 30);
 
         // Partial deletion: MB_A still holds uid 2, nothing is pruned.
-        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[1], true);
+        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[1]);
         assert!(FLAGS_STATE_MAP.get(&T2_ACCT).is_some());
         assert_eq!(
             EnvelopeFlagsManager::get_uid_map(T2_ACCT, T2_MB_A, 0).len(),
@@ -346,7 +347,7 @@ mod tests {
         );
 
         // Full drain of MB_A: mailbox level pruned, sibling and account stay.
-        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[2], true);
+        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_A, &[2]);
         assert!(FLAGS_STATE_MAP.get(&T2_ACCT).is_some());
         assert_eq!(
             EnvelopeFlagsManager::get_uid_map(T2_ACCT, T2_MB_A, 0).len(),
@@ -358,7 +359,36 @@ mod tests {
         );
 
         // Cleanup so the account-level pruning path is also covered.
-        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_B, &[3], true);
+        EnvelopeFlagsManager::clean_flags_state(T2_ACCT, T2_MB_B, &[3]);
         assert!(FLAGS_STATE_MAP.get(&T2_ACCT).is_none());
+    }
+
+    /// Pruning an empty entry must stay unobservable, because `clean_flags_state`
+    /// prunes unconditionally: PR #29 briefly gated the prune on "is this a full
+    /// sync", which only ever preserved an EMPTY entry — and every reader below
+    /// answers an empty entry exactly as it answers a missing one. That is what
+    /// makes the gate inert, and it is the reason it could be dropped instead of
+    /// fixed. If a reader ever starts distinguishing the two (e.g. reporting an
+    /// empty mailbox differently from an unknown one), pruning becomes
+    /// observable and the gate's removal has to be reconsidered.
+    #[test]
+    fn empty_flags_entry_reads_like_a_missing_one() {
+        // Missing entry: nothing is known about the account.
+        assert_eq!(EnvelopeFlagsManager::count_account_uid_total(T4_ACCT), 0);
+        assert!(EnvelopeFlagsManager::get_max_uid(T4_ACCT, T4_MB).is_none());
+        assert!(EnvelopeFlagsManager::get_uid_map(T4_ACCT, T4_MB, 0).is_empty());
+
+        // Empty entry: exactly the state the gate preserved.
+        FLAGS_STATE_MAP
+            .entry(T4_ACCT)
+            .or_insert_with(DashMap::new)
+            .entry(T4_MB)
+            .or_insert_with(DashMap::new);
+
+        assert_eq!(EnvelopeFlagsManager::count_account_uid_total(T4_ACCT), 0);
+        assert!(EnvelopeFlagsManager::get_max_uid(T4_ACCT, T4_MB).is_none());
+        assert!(EnvelopeFlagsManager::get_uid_map(T4_ACCT, T4_MB, 0).is_empty());
+
+        FLAGS_STATE_MAP.remove(&T4_ACCT);
     }
 }
