@@ -327,6 +327,35 @@ pub struct Settings {
 
     #[clap(
         long,
+        default_value = "168",
+        env,
+        help = "How long (in hours) failed tasks are retained so they can be manually retried. Failed tasks older than this duration are removed during cleanup.",
+        value_parser = ValueParser::new(|s: &str| {
+            // Parse the string to a u64
+            let value = s.parse::<u64>().map_err(|_| {
+                format!(
+                    "Invalid value: {}. Please provide a valid number of hours.",
+                    s
+                )
+            })?;
+
+            // Set min and max limits
+            if value < 1 {
+                return Err("Failed task retention must be at least 1 hour.".to_string());
+            }
+            if value > 8760 {
+                return Err(
+                    "Failed task retention must be at most 8760 hours (365 days).".to_string()
+                );
+            }
+
+            Ok(value)
+        })
+    )]
+    pub rustmailer_failed_task_retention_hours: u64,
+
+    #[clap(
+        long,
         help = "Set the directory for storing backups of meta.db and tasks.db (must exist and have read/write permissions)",
         value_parser = ValueParser::new(|s: &str| {
             let path = PathBuf::from(s);
@@ -479,6 +508,7 @@ impl Settings {
             rustmailer_event_hook_workers: 10,
             rustmailer_max_email_content_length: 10000,
             rustmailer_cleanup_interval_hours: 72,
+            rustmailer_failed_task_retention_hours: 168,
             rustmailer_backup_dir: None,
             rustmailer_max_backups: 10,
             rustmailer_email_tracking_url: "http://localhost:15630/email-track".to_string(),

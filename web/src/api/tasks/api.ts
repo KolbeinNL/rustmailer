@@ -20,6 +20,22 @@ export const delete_email_task = async (id: number) => {
     return response.data;
 }
 
+export const retry_email_task = async (id: number) => {
+    const response = await axiosInstance.post(`/api/v1/send-email-task/${id}/retry`);
+    return response.data;
+}
+
+export const retry_email_tasks = async (created_after?: number, created_before?: number) => {
+    const params = new URLSearchParams();
+    if (created_after !== undefined) params.append('created_after', `${created_after}`);
+    if (created_before !== undefined) params.append('created_before', `${created_before}`);
+    const query = params.toString();
+    const response = await axiosInstance.post<{ retried: number }>(
+        `/api/v1/send-email-tasks/retry${query ? `?${query}` : ''}`
+    );
+    return response.data;
+}
+
 export const list_hook_tasks = async (pageIndex: number, pageSize: number, status: TaskStatus | 'all') => {
     const baseUrl = `/api/v1/hook-tasks?page=${pageIndex + 1}&page_size=${pageSize}&desc=true`;
     const url = status !== 'all' ? `${baseUrl}&status=${status}` : baseUrl;

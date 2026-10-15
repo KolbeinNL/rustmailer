@@ -82,3 +82,18 @@ pub fn create_openapi_service() -> OpenApiService<RustMailOpenApi, ()> {
         rustmailer_version!(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Duplicate `operation_id`s and malformed paths only surface when the
+    /// OpenAPI document is generated (the duplicate case panics), so building
+    /// the document is the cheapest way to guard the whole API surface.
+    #[test]
+    fn openapi_document_builds() {
+        let spec = create_openapi_service().spec();
+        assert!(spec.contains("/api/v1/send-email-task/{id}/retry"));
+        assert!(spec.contains("/api/v1/send-email-tasks/retry"));
+    }
+}

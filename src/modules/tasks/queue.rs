@@ -291,4 +291,20 @@ impl RustMailerTaskQueue {
     pub async fn remove_task(&self, id: u64) -> RustMailerResult<()> {
         NativeDbTaskStore::set_status(DB_MANAGER.tasks_db(), id, TaskStatus::Removed, None).await
     }
+
+    /// Requeues a single failed email task so the scheduler sends it again.
+    ///
+    /// The task keeps its original parameters, so the email body is reloaded
+    /// from the disk cache and nothing has to be resubmitted by the caller.
+    pub async fn retry_email_task(&self, id: u64) -> RustMailerResult<()> {
+        NativeDbTaskStore::reset_for_retry(DB_MANAGER.tasks_db(), id).await
+    }
+
+    /// Requeues several email tasks at once and returns how many were requeued.
+    ///
+    /// Ids that are unknown or no longer retryable are skipped rather than
+    /// failing the whole batch.
+    pub async fn retry_email_tasks(&self, ids: Vec<u64>) -> RustMailerResult<usize> {
+        NativeDbTaskStore::reset_tasks_for_retry(DB_MANAGER.tasks_db(), ids).await
+    }
 }
