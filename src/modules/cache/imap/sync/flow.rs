@@ -653,6 +653,7 @@ async fn sync_recent_envelope_flags(
         &local_mailbox.name,
         &local_uid_flags,
         &remote_uids_set,
+        false
     )
     .await?;
 
