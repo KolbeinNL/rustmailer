@@ -52,6 +52,22 @@ use tracing::{debug, error, info, warn};
 const ENVELOPE_BATCH_SIZE: u32 = 1000;
 const UID_FLAGS_BATCH_SIZE: u32 = 10000;
 
+/// Trailing UID window (counted back from `uid_next`) that the incremental
+/// fast path in [`sync_recent_envelope_flags`] fetches and reconciles.
+///
+/// This window is also the only place an incremental sync can notice that a
+/// message vanished from the server — ghosts left behind by messages moved to
+/// another folder are removed here. Anything older than the window is left to
+/// the periodic full sync, which reconciles the whole mailbox.
+const RECENT_FLAGS_WINDOW: u32 = 200;
+
+/// First UID covered by the incremental window: [`RECENT_FLAGS_WINDOW`] uids
+/// back from `uid_next`, clamped to 1 so a mailbox smaller than the window is
+/// covered whole.
+fn recent_window_min_uid(uid_next: u32) -> u32 {
+    (uid_next.saturating_sub(RECENT_FLAGS_WINDOW)).max(1)
+}
+
 /// True once the account has completed its initial sync at least once. Gates
 /// event emission on the bulk ingestion paths (`fetch_and_save_since_date` /
 /// `fetch_and_save_full_mailbox`): a brand-new account's first fetch must not
@@ -590,7 +606,7 @@ async fn sync_recent_envelope_flags(
     remote_mailbox: &MailBox,
     uid_next: u32,
 ) -> RustMailerResult<()> {
-    let min_uid = (uid_next.saturating_sub(200)).max(1);
+    let min_uid = recent_window_min_uid(uid_next);
 
     let local_uid_flags = EnvelopeFlagsManager::get_uid_map(account.id, local_mailbox.id, min_uid);
 
@@ -618,13 +634,25 @@ async fn sync_recent_envelope_flags(
             .await?;
     }
 
+    // Reconcile the window against the server so that messages that vanished
+    // from it are dropped locally. This is the only place an incremental sync
+    // can see a deletion: the slow path below only ever adds UIDs above the
+    // local max, so a message moved to another folder would otherwise linger as
+    // a ghost until the next full sync.
+    //
+    // Reaching this point requires the local mailbox row to already agree with
+    // the server on both `uid_next` and `exists`, and that row is only written
+    // after a successful sync — so a message moved out is picked up one sync
+    // cycle after the move (EXPUNGE does not bump `uid_next`, which is why the
+    // following cycle still takes this path). Anything older than
+    // RECENT_FLAGS_WINDOW is out of scope here and is cleaned by the periodic
+    // full sync instead.
     cleanup_missing_remote_emails(
         account,
         local_mailbox.id,
         &local_mailbox.name,
         &local_uid_flags,
         &remote_uids_set,
-        false
     )
     .await?;
 
@@ -1241,4 +1269,68 @@ fn generate_uid_sequence(nums: Vec<u32>, chunk_size: usize) -> Vec<String> {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Unique ids so parallel tests never share FLAGS_STATE_MAP shards.
+    const T_ACCT: u64 = 9_900_031;
+    const T_MB: u64 = 9_900_032;
+
+    /// Regression test for the ghost left behind when a message is moved to
+    /// another folder: `sync_recent_envelope_flags` reconciles the local flags
+    /// index against the server, so a message that vanished from the trailing
+    /// [`RECENT_FLAGS_WINDOW`] is dropped locally instead of lingering until the
+    /// next full sync.
+    ///
+    /// The uids below straddle the window boundary exactly, so both halves of
+    /// the contract are pinned: a ghost inside the window is reported, and one
+    /// just outside it is not. The boundary itself is asserted against a
+    /// literal so that resizing [`RECENT_FLAGS_WINDOW`] has to be a deliberate
+    /// change — the aged-out case is exactly what the full sync backstops.
+    #[test]
+    fn incremental_reconcile_covers_the_window_and_only_the_window() {
+        let uid_next: u32 = 5_001;
+        let min_uid = recent_window_min_uid(uid_next);
+        assert_eq!(
+            min_uid, 4_801,
+            "window must reach back exactly RECENT_FLAGS_WINDOW uids from uid_next"
+        );
+        assert_eq!(
+            recent_window_min_uid(RECENT_FLAGS_WINDOW - 1),
+            1,
+            "a mailbox smaller than the window must be covered whole"
+        );
+
+        let ghost_aged_out = min_uid - 1; // one below the window: full sync's job
+        let ghost_in_window = min_uid; // first uid in the window
+        let live = uid_next - 1; // in the window, still present on the server
+
+        for uid in [ghost_aged_out, ghost_in_window, live] {
+            EnvelopeFlagsManager::update_flag_change(T_ACCT, T_MB, uid, 1);
+        }
+
+        // What sync_recent_envelope_flags compares: get_uid_map(mailbox, min_uid)
+        // against the uids the server reported for "min_uid:*".
+        let local_window = EnvelopeFlagsManager::get_uid_map(T_ACCT, T_MB, min_uid);
+        assert_eq!(
+            local_window.len(),
+            2,
+            "the window must start at min_uid: exclude the aged-out ghost, keep the live message"
+        );
+
+        let remote_uids: AHashSet<u32> = [live].into_iter().collect();
+        let mut to_remove = find_missing_remote_uids(&local_window, &remote_uids);
+        to_remove.sort();
+
+        assert_eq!(
+            to_remove,
+            vec![ghost_in_window],
+            "the in-window ghost is removed incrementally; the aged-out one must not be"
+        );
+
+        crate::modules::cache::imap::manager::FLAGS_STATE_MAP.remove(&T_ACCT);
+    }
 }

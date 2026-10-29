@@ -169,9 +169,17 @@ impl NativeDbTaskStore {
 
         let cleanup_interval_ms =
             SETTINGS.rustmailer_cleanup_interval_hours as i64 * HOUR_TO_MS as i64;
+        // Failed tasks are retained longer than the other terminal states so that
+        // they can still be inspected and manually retried after an outage.
+        let failed_retention_ms =
+            SETTINGS.rustmailer_failed_task_retention_hours as i64 * HOUR_TO_MS as i64;
         let now = utc_now!();
 
         for status in statuses_to_clean {
+            let retention_ms = match status {
+                TaskStatus::Failed => failed_retention_ms,
+                _ => cleanup_interval_ms,
+            };
             // let status_str = status.to_string();
             let task_ids: Vec<u64> = {
                 let rw = database
@@ -183,7 +191,7 @@ impl NativeDbTaskStore {
                     .start_with(status.code())
                     .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
                     .filter_map(|result| match result {
-                        Ok(t) if now - t.created_at > cleanup_interval_ms => Some(Ok(t.id)),
+                        Ok(t) if now - t.created_at > retention_ms => Some(Ok(t.id)),
                         Ok(_) => None,
                         Err(e) => Some(Err(e)),
                     })
@@ -249,6 +257,106 @@ impl NativeDbTaskStore {
         )
         .await?;
         Ok(())
+    }
+
+    /// Returns `true` when a task in this state may be manually retried.
+    ///
+    /// Only terminal states that still represent an attempt worth repeating are
+    /// retryable. In particular `Scheduled`/`Running` are excluded so a manual
+    /// retry can never race with the scheduler.
+    fn is_retryable(status: &TaskStatus) -> bool {
+        matches!(status, TaskStatus::Failed | TaskStatus::Stopped)
+    }
+
+    /// Clears the terminal state of a task so the scheduler picks it up again on
+    /// its next tick: the retry counter is reset (handing the task a full
+    /// automatic retry budget again) and `next_run` is pulled forward to now.
+    fn rewind_for_retry(entity: &TaskMetaEntity) -> TaskMetaEntity {
+        let mut updated = entity.clone();
+        updated.status = TaskStatus::Scheduled;
+        updated.retry_count = None;
+        updated.last_error = None;
+        updated.stopped_reason = None;
+        updated.next_run = utc_now!();
+        updated.updated_at = utc_now!();
+        updated
+    }
+
+    /// Rewinds a single task so it is executed again.
+    ///
+    /// Fails with `InvalidParameter` when the task exists but is not in a
+    /// retryable state, and with `ResourceNotFound` when it does not exist.
+    pub async fn reset_for_retry(
+        database: &Arc<Database<'static>>,
+        task_id: u64,
+    ) -> RustMailerResult<()> {
+        update_impl(
+            database,
+            move |rw| {
+                rw.get()
+                    .secondary::<TaskMetaEntity>(TaskMetaEntityKey::id, task_id)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                    .ok_or_else(|| {
+                        raise_error!(
+                            format!("The task with id={} was not found.", task_id),
+                            ErrorCode::ResourceNotFound
+                        )
+                    })
+            },
+            |current| {
+                if !Self::is_retryable(&current.status) {
+                    return Err(raise_error!(
+                        format!(
+                            "The task with id={} is in state '{}' and cannot be retried. Only failed or stopped tasks can be retried.",
+                            current.id, current.status
+                        ),
+                        ErrorCode::InvalidParameter
+                    ));
+                }
+                Ok(Self::rewind_for_retry(current))
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Rewinds a batch of tasks and returns how many were actually requeued.
+    ///
+    /// Unknown ids and ids that are not in a retryable state are skipped, so a
+    /// batch retry is safe to fire at a list that changed in the meantime.
+    pub async fn reset_tasks_for_retry(
+        database: &Arc<Database<'static>>,
+        task_ids: Vec<u64>,
+    ) -> RustMailerResult<usize> {
+        if task_ids.is_empty() {
+            return Ok(0);
+        }
+        let updated = batch_update_impl(
+            database,
+            move |rw| {
+                let mut retryable = Vec::new();
+                for task_id in task_ids.iter() {
+                    let entity = rw
+                        .get()
+                        .secondary::<TaskMetaEntity>(TaskMetaEntityKey::id, *task_id)
+                        .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
+                    if let Some(entity) = entity {
+                        if Self::is_retryable(&entity.status) {
+                            retryable.push(entity);
+                        }
+                    }
+                }
+                Ok(retryable)
+            },
+            |targets| {
+                Ok(targets
+                    .iter()
+                    .map(|entity| (entity.clone(), Self::rewind_for_retry(entity)))
+                    .collect::<Vec<_>>())
+            },
+        )
+        .await?;
+        Ok(updated.len())
     }
 
     pub async fn heartbeat(

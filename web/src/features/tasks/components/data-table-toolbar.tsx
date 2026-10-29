@@ -5,6 +5,7 @@
  */
 
 import { Table } from '@tanstack/react-table'
+import { IconRefresh } from '@tabler/icons-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { TaskStatus } from '../data/schema'
@@ -14,6 +15,7 @@ interface DataTableToolbarProps<TData> {
   placeHolder: string
   statusFilter?: TaskStatus | 'all'
   onStatusFilterChange: (status: TaskStatus | 'all') => void
+  onRetryAllFailed?: () => void
 }
 
 const statusOptions = [
@@ -30,7 +32,8 @@ export function DataTableToolbar<TData>({
   table,
   placeHolder,
   statusFilter = 'all',
-  onStatusFilterChange
+  onStatusFilterChange,
+  onRetryAllFailed
 }: DataTableToolbarProps<TData>) {
   return (
     <div className="flex items-center gap-4 flex-wrap sm:flex-nowrap">
@@ -57,6 +60,17 @@ export function DataTableToolbar<TData>({
           </Button>
         ))}
       </div>
+      {onRetryAllFailed && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto h-8 whitespace-nowrap text-xs"
+          onClick={onRetryAllFailed}
+        >
+          <IconRefresh size={16} className="mr-1" />
+          Retry all failed
+        </Button>
+      )}
     </div>
   )
 }

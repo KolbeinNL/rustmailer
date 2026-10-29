@@ -22,8 +22,18 @@ use std::collections::BTreeSet;
 
 use poem_openapi::param::Query;
 use poem_openapi::payload::Json;
-use poem_openapi::OpenApi;
+use poem_openapi::{Object, OpenApi};
+use serde::{Deserialize, Serialize};
+
 pub struct SendMailApi;
+
+/// The outcome of a batch retry request.
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+pub struct RetryTasksResult {
+    /// The number of tasks that were actually requeued. Tasks that had already
+    /// been retried or removed in the meantime are not counted.
+    pub retried: usize,
+}
 
 #[OpenApi(prefix_path = "/api/v1", tag = "ApiTags::SendMail")]
 impl SendMailApi {
@@ -256,5 +266,77 @@ impl SendMailApi {
 
         context.require_account_access(task.account_id)?;
         Ok(send_queue.remove_task(id).await?)
+    }
+
+    /// Retries a failed email task.
+    /// The task is requeued with its original request data, so the email body is
+    /// reloaded from the disk cache and there is no need to resubmit the original
+    /// send request. Only tasks that failed or were stopped can be retried.
+    #[oai(
+        path = "/send-email-task/:id/retry",
+        method = "post",
+        operation_id = "retry_email_task"
+    )]
+    async fn retry_email_task(
+        &self,
+        /// The ID of the email task to retry
+        id: Path<u64>,
+        context: ClientContext,
+    ) -> ApiResult<()> {
+        let send_queue = RustMailerTaskQueue::get().unwrap();
+        let id = id.0;
+        let task = send_queue
+            .get_email_task(id)
+            .await?
+            .ok_or_else(|| raise_error!("Task not found".into(), ErrorCode::ResourceNotFound))?;
+
+        context.require_account_access(task.account_id)?;
+        Ok(send_queue.retry_email_task(id).await?)
+    }
+
+    /// Retries every failed email task, optionally restricted to a time window.
+    /// This is meant for recovering after a mail server outage or migration: the
+    /// failed tasks are requeued as they are, so nothing has to be recreated.
+    /// Only tasks in the `Failed` state are retried; pass a `created_after` and/or
+    /// `created_before` bound (Unix timestamp in milliseconds) to narrow the set.
+    #[oai(
+        path = "/send-email-tasks/retry",
+        method = "post",
+        operation_id = "retry_email_tasks"
+    )]
+    async fn retry_email_tasks(
+        &self,
+        /// Optional. Only retry tasks created at or after this Unix timestamp (milliseconds).
+        created_after: Query<Option<i64>>,
+        /// Optional. Only retry tasks created at or before this Unix timestamp (milliseconds).
+        created_before: Query<Option<i64>>,
+        context: ClientContext,
+    ) -> ApiResult<Json<RetryTasksResult>> {
+        let send_queue = RustMailerTaskQueue::get().unwrap();
+
+        // Non-root callers only see the accounts their token grants access to.
+        let allowed_ids: Option<BTreeSet<u64>> = context
+            .accessible_accounts()?
+            .map(|accounts| accounts.iter().map(|a| a.id).collect());
+
+        let ids: Vec<u64> = send_queue
+            .list_email_tasks_by_status(TaskStatus::Failed)
+            .await?
+            .into_iter()
+            .filter(|task| {
+                let time_match = created_after.0.map_or(true, |after| task.created_at >= after)
+                    && created_before
+                        .0
+                        .map_or(true, |before| task.created_at <= before);
+                let account_match = allowed_ids
+                    .as_ref()
+                    .map_or(true, |allowed| allowed.contains(&task.account_id));
+                time_match && account_match
+            })
+            .map(|task| task.id)
+            .collect();
+
+        let retried = send_queue.retry_email_tasks(ids).await?;
+        Ok(Json(RetryTasksResult { retried }))
     }
 }

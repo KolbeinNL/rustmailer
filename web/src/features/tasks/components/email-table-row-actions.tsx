@@ -6,7 +6,7 @@
 
 import { DotsHorizontalIcon } from '@radix-ui/react-icons'
 import { Row } from '@tanstack/react-table'
-import { IconTrash } from '@tabler/icons-react'
+import { IconRefresh, IconTrash } from '@tabler/icons-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -17,8 +17,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useTasksContext } from '../context'
-import { EmailTask } from '../data/schema'
+import { EmailTask, TaskStatus } from '../data/schema'
 import { MessageSquareMore } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { toast } from '@/hooks/use-toast'
+import { retry_email_task } from '@/api/tasks/api'
 
 interface EmailTableRowActionsProps {
   row: Row<EmailTask>
@@ -26,6 +29,31 @@ interface EmailTableRowActionsProps {
 
 export function EmailTableRowActions({ row }: EmailTableRowActionsProps) {
   const { setOpen, setCurrentEmailRow } = useTasksContext()
+  const queryClient = useQueryClient()
+
+  const retryMutation = useMutation({
+    mutationFn: () => retry_email_task(row.original.id),
+    retry: 0,
+    onSuccess: () => {
+      toast({
+        title: 'Task requeued',
+        description: `Task ${row.original.id} will be sent again.`,
+      })
+      queryClient.invalidateQueries({ queryKey: ['send-email-tasks'] })
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Failed to retry task',
+        description: `${error.message}`,
+        variant: 'destructive',
+      })
+    },
+  })
+
+  const retryable =
+    row.original.status === TaskStatus.Failed ||
+    row.original.status === TaskStatus.Stopped
+
   return (
     <>
       <DropdownMenu modal={false}>
@@ -50,6 +78,17 @@ export function EmailTableRowActions({ row }: EmailTableRowActionsProps) {
               <MessageSquareMore size={16} />
             </DropdownMenuShortcut>
           </DropdownMenuItem>
+          {retryable && (
+            <DropdownMenuItem
+              disabled={retryMutation.isPending}
+              onClick={() => retryMutation.mutate()}
+            >
+              Retry
+              <DropdownMenuShortcut>
+                <IconRefresh size={16} />
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onClick={() => {

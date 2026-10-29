@@ -30,6 +30,7 @@ import {
 import { EmailTask, TaskStatus } from '../data/schema'
 import { DataTablePagination } from './data-table-pagination'
 import { DataTableToolbar } from './data-table-toolbar'
+import { RetryFailedTasksDialog } from './retry-failed-tasks-dialog'
 import { useQuery } from '@tanstack/react-query'
 import Logo from '@/assets/logo.svg'
 import { TableSkeleton } from '@/components/table-skeleton'
@@ -56,6 +57,7 @@ export function EmailTaskTable({ columns }: DataTableProps) {
     pageSize: 10,
   });
   const [statusFilter, setStatusFilter] = useState<TaskStatus | 'all'>('all');
+  const [retryDialogOpen, setRetryDialogOpen] = useState(false);
 
   const { data: queryResult, isLoading } = useQuery({
     queryKey: ['send-email-tasks', pagination.pageIndex, pagination.pageSize, statusFilter],
@@ -119,6 +121,11 @@ export function EmailTaskTable({ columns }: DataTableProps) {
         placeHolder="Filter email tasks..."
         statusFilter={statusFilter}
         onStatusFilterChange={handleStatusFilterChange}
+        onRetryAllFailed={() => setRetryDialogOpen(true)}
+      />
+      <RetryFailedTasksDialog
+        open={retryDialogOpen}
+        onOpenChange={setRetryDialogOpen}
       />
       {isLoading ? (
         <TableSkeleton columns={columns.length} rows={10} />
